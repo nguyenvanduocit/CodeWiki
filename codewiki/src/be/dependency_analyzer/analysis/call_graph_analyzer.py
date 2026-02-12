@@ -363,7 +363,6 @@ class CallGraphAnalyzer:
                 if method_name not in func_lookup:
                     func_lookup[method_name] = func_id
 
-        resolved_count = 0
         for relationship in self.call_relationships:
             callee_name = relationship.callee
 

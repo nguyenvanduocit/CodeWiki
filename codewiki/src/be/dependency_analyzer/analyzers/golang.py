@@ -23,8 +23,6 @@ GO_PRIMITIVES: Set[str] = {
     "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
     "float32", "float64", "complex64", "complex128",
     "string", "error", "any",
-    # Common Go built-in types
-    "Context", "error", "Time", "Duration",
 }
 
 # Go built-in functions to exclude from call tracking
