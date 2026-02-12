@@ -15,6 +15,28 @@ from codewiki.src.be.dependency_analyzer.models.core import Node
 logger = logging.getLogger(__name__)
 
 
+def _has_go_components(components: Dict[str, Node]) -> bool:
+    for comp in components.values():
+        path = (comp.relative_path or comp.file_path or "").lower()
+        if path.endswith(".go"):
+            return True
+    return False
+
+
+def _get_valid_leaf_types(components: Dict[str, Node]) -> Set[str]:
+    available_types = {comp.component_type for comp in components.values()}
+    valid_types = {"class", "interface", "struct"}
+
+    # Go repositories should retain function/method leaves even when structs exist.
+    if _has_go_components(components):
+        valid_types.update({"function", "method"})
+    elif not available_types.intersection(valid_types):
+        # C-style repositories that do not define class-like components.
+        valid_types.add("function")
+
+    return valid_types
+
+
 def detect_cycles(graph: Dict[str, Set[str]]) -> List[List[str]]:
     """
     Detect cycles in a dependency graph using Tarjan's algorithm to find
@@ -289,59 +311,43 @@ def get_leaf_nodes(graph: Dict[str, Set[str]], components: Dict[str, Node]) -> L
     
     # Find leaf nodes (nodes that no other nodes depend on)
     leaf_nodes = set(acyclic_graph.keys())
+    has_go_components = _has_go_components(components)
+    valid_types = _get_valid_leaf_types(components)
 
-    
-    
-    def concise_node(leaf_nodes: Set[str]) -> Set[str]:
+    def filter_valid_leaf_nodes(leaf_nodes: Set[str]) -> List[str]:
         concise_leaf_nodes = set()
         for node in leaf_nodes:
             if node.endswith("__init__"):
-                # replace by class name
                 concise_leaf_nodes.add(node.replace(".__init__", ""))
             else:
                 concise_leaf_nodes.add(node)
-        
+
         keep_leaf_nodes = []
-        
-        # Determine if we should include functions based on available component types
-        # For C-based projects, we need to include functions since they don't have classes
-        available_types = set()
-        for comp in components.values():
-            available_types.add(comp.component_type)
-        
-        # Valid types for leaf nodes - include functions for C-based codebases
-        valid_types = {"class", "interface", "struct"}
-        # If no classes/interfaces/structs are found, include functions
-        if not available_types.intersection(valid_types):
-            valid_types.add("function")
 
         for leaf_node in leaf_nodes:
-            # Skip any leaf nodes that are clearly error strings or invalid identifiers
-            if not isinstance(leaf_node, str) or leaf_node.strip() == "" or any(err_keyword in leaf_node.lower() for err_keyword in ['error', 'exception', 'failed', 'invalid']):
+            if not isinstance(leaf_node, str) or leaf_node.strip() == "":
                 logger.debug(f"Skipping invalid leaf node identifier: '{leaf_node}'")
                 continue
-                
+
             if leaf_node in components:
                 if components[leaf_node].component_type in valid_types:
                     keep_leaf_nodes.append(leaf_node)
-                else:
-                    # logger.debug(f"Leaf node {leaf_node} is a {components[leaf_node].component_type}, removing it")
-                    pass
-            else:
-                # logger.debug(f"Leaf node {leaf_node} not found in components, removing it")
-                pass
 
         return keep_leaf_nodes
 
-    concise_leaf_nodes = concise_node(leaf_nodes)
-    if len(concise_leaf_nodes) >= 400:
+    concise_leaf_nodes = filter_valid_leaf_nodes(leaf_nodes)
+    if len(concise_leaf_nodes) >= 400 and not has_go_components:
         logger.debug(f"Leaf nodes are too many ({len(concise_leaf_nodes)}), removing dependencies of other nodes")
         # Remove nodes that are dependencies of other nodes
         for node, deps in acyclic_graph.items():
             for dep in deps:
                 leaf_nodes.discard(dep)
         
-        concise_leaf_nodes = concise_node(leaf_nodes)
+        concise_leaf_nodes = filter_valid_leaf_nodes(leaf_nodes)
+    elif len(concise_leaf_nodes) >= 400 and has_go_components:
+        logger.debug(
+            f"Keeping all {len(concise_leaf_nodes)} leaf candidates for Go repository to preserve function coverage"
+        )
     
     if not leaf_nodes:
         logger.warning("No leaf nodes found in the graph")

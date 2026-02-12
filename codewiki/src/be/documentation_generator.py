@@ -28,12 +28,32 @@ from codewiki.src.be.agent_orchestrator import AgentOrchestrator
 
 class DocumentationGenerator:
     """Main documentation generation orchestrator."""
-    
+
     def __init__(self, config: Config, commit_id: str = None):
         self.config = config
         self.commit_id = commit_id
         self.graph_builder = DependencyGraphBuilder(config)
         self.agent_orchestrator = AgentOrchestrator(config)
+
+    async def _process_module(self, module_name, components, component_ids,
+                              module_path, working_dir):
+        """Dispatch module processing to Agent SDK or pydantic-ai orchestrator."""
+        if self.config.use_agent_sdk:
+            from codewiki.src.be.claude_agent_sdk_adapter import agent_sdk_process_module
+            return await agent_sdk_process_module(
+                module_name, components, component_ids,
+                module_path, working_dir, self.config
+            )
+        return await self.agent_orchestrator.process_module(
+            module_name, components, component_ids, module_path, working_dir
+        )
+
+    async def _call_llm(self, prompt):
+        """Dispatch LLM call to Agent SDK or standard call_llm."""
+        if self.config.use_agent_sdk:
+            from codewiki.src.be.claude_agent_sdk_adapter import agent_sdk_call_llm
+            return await agent_sdk_call_llm(prompt, self.config)
+        return call_llm(prompt, self.config)
     
     def create_documentation_metadata(self, working_dir: str, components: Dict[str, Any], num_leaf_nodes: int):
         """Create a metadata file with documentation generation information."""
@@ -55,7 +75,9 @@ class DocumentationGenerator:
             "files_generated": [
                 "overview.md",
                 "module_tree.json",
-                "first_module_tree.json"
+                "first_module_tree.json",
+                "codebase_map.json",
+                "graph.html"
             ]
         }
         
@@ -71,14 +93,16 @@ class DocumentationGenerator:
         file_manager.save_json(metadata, metadata_path)
 
     
-    def get_processing_order(self, module_tree: Dict[str, Any], parent_path: List[str] = []) -> List[tuple[List[str], str]]:
+    def get_processing_order(self, module_tree: Dict[str, Any], parent_path: List[str] = None) -> List[tuple[List[str], str]]:
         """Get the processing order using topological sort (leaf modules first)."""
+        if parent_path is None:
+            parent_path = []
         processing_order = []
-        
+
         def collect_modules(tree: Dict[str, Any], path: List[str]):
             for module_name, module_info in tree.items():
                 current_path = path + [module_name]
-                
+
                 # If this module has children, process them first
                 if module_info.get("children") and isinstance(module_info["children"], dict) and module_info["children"]:
                     collect_modules(module_info["children"], current_path)
@@ -87,7 +111,7 @@ class DocumentationGenerator:
                 else:
                     # This is a leaf module, add it immediately
                     processing_order.append((current_path, module_name))
-        
+
         collect_modules(module_tree, parent_path)
         return processing_order
 
@@ -157,12 +181,13 @@ class DocumentationGenerator:
                     
                     # Process the module
                     if self.is_leaf_module(module_info):
-                        logger.info(f"📄 Processing leaf module: {module_key}")
-                        final_module_tree = await self.agent_orchestrator.process_module(
-                            module_name, components, module_info["components"], module_path, working_dir
+                        logger.info(f"Processing leaf module: {module_key}")
+                        final_module_tree = await self._process_module(
+                            module_name, components, module_info["components"],
+                            module_path, working_dir
                         )
                     else:
-                        logger.info(f"📁 Processing parent module: {module_key}")
+                        logger.info(f"Processing parent module: {module_key}")
                         final_module_tree = await self.generate_parent_module_docs(
                             module_path, working_dir
                         )
@@ -175,14 +200,14 @@ class DocumentationGenerator:
                     continue
 
             # Generate repo overview
-            logger.info(f"📚 Generating repository overview")
+            logger.info(f"Generating repository overview")
             final_module_tree = await self.generate_parent_module_docs(
                 [], working_dir
             )
         else:
             logger.info(f"Processing whole repo because repo can fit in the context window")
             repo_name = os.path.basename(os.path.normpath(self.config.repo_path))
-            final_module_tree = await self.agent_orchestrator.process_module(
+            final_module_tree = await self._process_module(
                 repo_name, components, leaf_nodes, [], working_dir
             )
 
@@ -231,11 +256,10 @@ class DocumentationGenerator:
         )
         
         try:
-            parent_docs = call_llm(prompt, self.config)
+            parent_docs = await self._call_llm(prompt)
             
             # Parse and save parent documentation
             parent_content = parent_docs.split("<OVERVIEW>")[1].split("</OVERVIEW>")[0].strip()
-            # parent_content = prompt
             file_manager.save_text(parent_content, parent_docs_path)
             
             logger.debug(f"Successfully generated parent documentation for: {module_name}")
@@ -246,23 +270,127 @@ class DocumentationGenerator:
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
+    def _generate_codebase_map(self, components: Dict[str, Any], graph, working_dir: str, circular_deps=None) -> None:
+        """Generate codebase_map.json with structural analysis data."""
+        from datetime import datetime
+        from collections import defaultdict
+
+        # Build metadata
+        repo_name = os.path.basename(os.path.normpath(self.config.repo_path))
+        languages = set()
+        for node in components.values():
+            ext = os.path.splitext(node.relative_path)[1]
+            if ext:
+                languages.add(ext.lstrip('.'))
+
+        # Community aggregation
+        communities_map = defaultdict(lambda: {"node_count": 0, "hub_count": 0, "keywords": defaultdict(float)})
+        for node in components.values():
+            cid = node.community_id
+            if cid >= 0:
+                communities_map[cid]["node_count"] += 1
+                if node.is_hub:
+                    communities_map[cid]["hub_count"] += 1
+                for kw, score in node.tfidf_keywords:
+                    communities_map[cid]["keywords"][kw] += score
+
+        communities = []
+        for cid, info in sorted(communities_map.items()):
+            top_kw = sorted(info["keywords"].items(), key=lambda x: x[1], reverse=True)[:10]
+            communities.append({
+                "id": cid,
+                "node_count": info["node_count"],
+                "hub_count": info["hub_count"],
+                "tfidf_keywords": [[kw, round(s, 4)] for kw, s in top_kw]
+            })
+
+        # Build nodes and edges
+        nodes = []
+        edges = []
+        hub_files = []
+        instabilities = []
+
+        for comp_id, node in components.items():
+            nodes.append({
+                "id": comp_id,
+                "name": node.name,
+                "type": node.component_type,
+                "file_path": node.relative_path,
+                "metrics": {
+                    "pagerank": round(node.pagerank, 6),
+                    "fan_in": node.fan_in,
+                    "fan_out": node.fan_out,
+                    "instability": round(node.instability, 4),
+                    "is_hub": node.is_hub,
+                    "complexity_score": round(node.complexity_score, 2),
+                    "tfidf_keywords": node.tfidf_keywords
+                },
+                "community_id": node.community_id,
+                "depends_on": list(node.depends_on)
+            })
+
+            for dep in node.depends_on:
+                edges.append({"source": comp_id, "target": dep, "type": "depends_on"})
+
+            if node.is_hub:
+                hub_files.append(node.name)
+            instabilities.append((node.name, node.instability))
+
+        instabilities.sort(key=lambda x: x[1], reverse=True)
+
+        # Use pre-computed circular dependencies if available
+        if circular_deps is None:
+            circular_deps = []
+
+        codebase_map = {
+            "version": "1.0",
+            "metadata": {
+                "project_name": repo_name,
+                "generated_at": datetime.now().isoformat(),
+                "commit_sha": self.commit_id,
+                "languages": sorted(languages),
+                "total_components": len(components)
+            },
+            "nodes": nodes,
+            "edges": edges,
+            "communities": communities,
+            "summary_metrics": {
+                "total_nodes": len(nodes),
+                "total_edges": len(edges),
+                "hub_files": hub_files,
+                "most_unstable": [name for name, _ in instabilities[:5]],
+                "most_stable": [name for name, _ in instabilities[-5:]],
+                "circular_dependencies": circular_deps
+            }
+        }
+
+        map_path = os.path.join(working_dir, "codebase_map.json")
+        file_manager.save_json(codebase_map, map_path)
+        logger.info(f"Generated codebase_map.json with {len(nodes)} nodes and {len(edges)} edges")
+
     async def run(self) -> None:
         """Run the complete documentation generation process using dynamic programming."""
         try:
             # Build dependency graph
-            components, leaf_nodes = self.graph_builder.build_dependency_graph()
+            components, leaf_nodes, graph = self.graph_builder.build_dependency_graph()
 
             logger.debug(f"Found {len(leaf_nodes)} leaf nodes")
-            # logger.debug(f"Leaf nodes:\n{'\n'.join(sorted(leaf_nodes)[:200])}")
-            # exit()
-            
-            # Cluster modules
+
             working_dir = os.path.abspath(self.config.docs_dir)
             file_manager.ensure_directory(working_dir)
+
+            # Generate codebase map (uses pre-computed circular deps)
+            circular_deps = self.graph_builder.circular_deps
+            self._generate_codebase_map(components, graph, working_dir, circular_deps=circular_deps)
+
+            # Generate interactive graph viewer
+            from codewiki.src.be.graph_viewer_generator import generate_graph_viewer
+            generate_graph_viewer(working_dir)
+
+            # Cluster modules (needs FULL components dict before cache filtering)
             first_module_tree_path = os.path.join(working_dir, FIRST_MODULE_TREE_FILENAME)
             module_tree_path = os.path.join(working_dir, MODULE_TREE_FILENAME)
-            
-            # Check if module tree exists
+
             if os.path.exists(first_module_tree_path):
                 logger.debug(f"Module tree found at {first_module_tree_path}")
                 module_tree = file_manager.load_json(first_module_tree_path)
@@ -270,22 +398,36 @@ class DocumentationGenerator:
                 logger.debug(f"Module tree not found at {module_tree_path}, clustering modules")
                 module_tree = cluster_modules(leaf_nodes, components, self.config)
                 file_manager.save_json(module_tree, first_module_tree_path)
-            
+
             file_manager.save_json(module_tree, module_tree_path)
-            
+
             logger.debug(f"Grouped components into {len(module_tree)} modules")
-            
+
+            # Content-hash caching: skip unchanged components
+            cache = None
+            if not self.config.no_cache:
+                from codewiki.src.be.content_cache import get_changed_components, save_cache
+                components, cache = get_changed_components(components, working_dir)
+                leaf_nodes = [ln for ln in leaf_nodes if ln in components]
+                if not components:
+                    logger.info("All components unchanged (cache hit). Skipping generation.")
+                    return
+
             # Generate module documentation using dynamic programming approach
             # This processes leaf modules first, then parent modules
             working_dir = await self.generate_module_documentation(components, leaf_nodes)
-            
+
             # Create documentation metadata
             self.create_documentation_metadata(working_dir, components, len(leaf_nodes))
-            
+
+            # Save content cache after successful generation
+            if cache is not None:
+                save_cache(os.path.abspath(self.config.docs_dir), cache)
+
             logger.debug(f"Documentation generation completed successfully using dynamic programming!")
             logger.debug(f"Processing order: leaf modules → parent modules → repository overview")
             logger.debug(f"Documentation saved to: {working_dir}")
-            
+
         except Exception as e:
             logger.error(f"Documentation generation failed: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")

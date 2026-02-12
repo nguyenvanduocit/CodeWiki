@@ -8,6 +8,7 @@ Create documentation that helps developers and maintainers understand:
 1. The module's purpose and core functionality
 2. Architecture and component relationships
 3. How the module fits into the overall system
+4. Use the provided analysis metrics (PageRank, hub detection, complexity, TF-IDF keywords) to prioritize documentation depth — architecturally critical components deserve more detailed coverage
 </OBJECTIVES>
 
 <DOCUMENTATION_STRUCTURE>
@@ -55,6 +56,7 @@ Create a comprehensive documentation that helps developers and maintainers under
 1. The module's purpose and core functionality
 2. Architecture and component relationships
 3. How the module fits into the overall system
+4. Use the provided analysis metrics (PageRank, hub detection, complexity, TF-IDF keywords) to prioritize documentation depth — architecturally critical components deserve more detailed coverage
 </OBJECTIVES>
 
 <DOCUMENTATION_REQUIREMENTS>
@@ -88,6 +90,7 @@ Generate comprehensive documentation for the {module_name} module using the prov
 <CORE_COMPONENT_CODES>
 {formatted_core_component_codes}
 </CORE_COMPONENT_CODES>
+{analysis_metrics}
 """.strip()
 
 REPO_OVERVIEW_PROMPT = """
@@ -135,6 +138,7 @@ Here is list of all potential core components of the repository (It's normal tha
 </POTENTIAL_CORE_COMPONENTS>
 
 Please group the components into groups such that each group is a set of components that are closely related to each other and together they form a module. DO NOT include components that are not essential to the repository.
+Note: Algorithm-detected community groupings may be provided as comments in the component list. You may use them as a starting point but are free to adjust groupings based on your analysis.
 Firstly reason about the components and then group them and return the result in the following format:
 <GROUPED_COMPONENTS>
 {{
@@ -172,6 +176,7 @@ Here is list of all potential core components of the module {module_name} (It's 
 </POTENTIAL_CORE_COMPONENTS>
 
 Please group the components into groups such that each group is a set of components that are closely related to each other and together they form a smaller module. DO NOT include components that are not essential to the module.
+Note: Algorithm-detected community groupings may be provided as comments in the component list. You may use them as a starting point but are free to adjust groupings based on your analysis.
 
 Firstly reason based on given context and then group them and return the result in the following format:
 <GROUPED_COMPONENTS>
@@ -212,6 +217,7 @@ Reasoning at first, then return the list of relative paths in JSON format.
 
 from typing import Dict, Any, List
 from codewiki.src.utils import file_manager
+from codewiki.src.be.dependency_analyzer.models.core import Node
 
 EXTENSION_TO_LANGUAGE = {
     ".py": "python",
@@ -260,7 +266,94 @@ def _format_module_tree_lines(module_tree: dict, module_name: str = None, indent
     return lines
 
 
-def format_user_prompt(module_name: str, core_component_ids: list[str], components: Dict[str, Any], module_tree: dict[str, any]) -> str:
+def format_component_metrics(component_ids: list[str], components: Dict[str, Any]) -> str:
+    """Format component metrics for prompt injection."""
+    # Check if any component has non-default metrics
+    has_metrics = any(
+        components[cid].pagerank > 0 or components[cid].is_hub or components[cid].complexity_score > 0
+        for cid in component_ids if cid in components and hasattr(components[cid], 'pagerank')
+    )
+    if not has_metrics:
+        return ""
+
+    sections = []
+
+    # Hub components
+    hubs = [
+        cid for cid in component_ids
+        if cid in components and components[cid].is_hub
+    ]
+    if hubs:
+        lines = ["## Architecturally Critical Components (Hubs)"]
+        for cid in hubs:
+            node = components[cid]
+            lines.append(
+                f"- **{node.name}** (PageRank: {node.pagerank:.4f}, "
+                f"fan-in: {node.fan_in}, fan-out: {node.fan_out}) — "
+                f"high connectivity, document thoroughly"
+            )
+        sections.append("\n".join(lines))
+
+    # Community structure
+    communities = {}
+    for cid in component_ids:
+        if cid in components and components[cid].community_id >= 0:
+            comm_id = components[cid].community_id
+            if comm_id not in communities:
+                communities[comm_id] = []
+            communities[comm_id].append(components[cid].name)
+    if len(communities) > 1:
+        lines = ["## Internal Community Structure"]
+        for comm_id, members in sorted(communities.items()):
+            lines.append(f"- Community {comm_id}: {', '.join(members)}")
+        sections.append("\n".join(lines))
+
+    # High complexity components
+    complex_comps = [
+        cid for cid in component_ids
+        if cid in components and components[cid].complexity_score > 60
+    ]
+    if complex_comps:
+        lines = ["## High Complexity Components"]
+        for cid in complex_comps:
+            node = components[cid]
+            lines.append(
+                f"- **{node.name}** (complexity: {node.complexity_score:.1f}/100) — "
+                f"document logic flow carefully"
+            )
+        sections.append("\n".join(lines))
+
+    # Key concepts (aggregated TF-IDF)
+    keyword_scores = {}
+    for cid in component_ids:
+        if cid in components:
+            for kw, score in components[cid].tfidf_keywords:
+                keyword_scores[kw] = keyword_scores.get(kw, 0) + score
+    if keyword_scores:
+        top_keywords = sorted(keyword_scores.items(), key=lambda x: x[1], reverse=True)[:15]
+        lines = ["## Key Concepts"]
+        lines.append("Top keywords: " + ", ".join(kw for kw, _ in top_keywords))
+        sections.append("\n".join(lines))
+
+    # Unstable components
+    unstable = [
+        cid for cid in component_ids
+        if cid in components and components[cid].instability > 0.7
+    ]
+    if unstable:
+        lines = ["## Unstable Components (high coupling)"]
+        for cid in unstable:
+            node = components[cid]
+            lines.append(
+                f"- **{node.name}** (instability: {node.instability:.2f}) — "
+                f"depends heavily on other modules"
+            )
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections) if sections else ""
+
+
+def format_user_prompt(module_name: str, core_component_ids: list[str], components: Dict[str, Any], module_tree: Dict[str, Any]) -> str:
     """
     Format the user prompt with module name and organized core component codes.
 
@@ -273,8 +366,6 @@ def format_user_prompt(module_name: str, core_component_ids: list[str], componen
         Formatted user prompt string
     """
     formatted_module_tree = "\n".join(_format_module_tree_lines(module_tree, module_name, 0))
-
-    # print(f"Formatted module tree:\n{formatted_module_tree}")
 
     # Group core component IDs by their file path
     grouped_components: dict[str, list[str]] = {}
@@ -295,7 +386,9 @@ def format_user_prompt(module_name: str, core_component_ids: list[str], componen
         for component_id in component_ids_in_file:
             core_component_codes += f"- {component_id}\n"
         
-        core_component_codes += f"\n## File Content:\n```{EXTENSION_TO_LANGUAGE['.'+path.split('.')[-1]]}\n"
+        ext = '.' + path.split('.')[-1] if '.' in path else ''
+        lang = EXTENSION_TO_LANGUAGE.get(ext, 'text')
+        core_component_codes += f"\n## File Content:\n```{lang}\n"
         
         # Read content of the file using the first component's file path
         try:
@@ -305,11 +398,20 @@ def format_user_prompt(module_name: str, core_component_ids: list[str], componen
         
         core_component_codes += "```\n\n"
         
-    return USER_PROMPT.format(module_name=module_name, formatted_core_component_codes=core_component_codes, module_tree=formatted_module_tree)
+    metrics_text = format_component_metrics(core_component_ids, components)
+    analysis_metrics = ""
+    if metrics_text:
+        analysis_metrics = f"""
+<ANALYSIS_METRICS>
+{metrics_text}
+</ANALYSIS_METRICS>
+* NOTE: Use these metrics to understand architectural significance. Hub components should get more detailed coverage. High complexity components need careful documentation of their logic flow.
+"""
+
+    return USER_PROMPT.format(module_name=module_name, formatted_core_component_codes=core_component_codes, module_tree=formatted_module_tree, analysis_metrics=analysis_metrics)
 
 
-
-def format_cluster_prompt(potential_core_components: str, module_tree: dict[str, any] = {}, module_name: str = None) -> str:
+def format_cluster_prompt(potential_core_components: str, module_tree: Dict[str, Any] = None, module_name: str = None) -> str:
     """
     Format the cluster prompt with potential core components and module tree.
     """

@@ -141,7 +141,9 @@ class CLIDocumentationGenerator:
                 max_token_per_module=self.config.get('max_token_per_module', 36369),
                 max_token_per_leaf_module=self.config.get('max_token_per_leaf_module', 16000),
                 max_depth=self.config.get('max_depth', 2),
-                agent_instructions=self.config.get('agent_instructions')
+                agent_instructions=self.config.get('agent_instructions'),
+                use_agent_sdk=self.config.get('use_agent_sdk', False),
+                no_cache=self.config.get('no_cache', False)
             )
             
             # Run backend documentation generation
@@ -160,9 +162,6 @@ class CLIDocumentationGenerator:
             
             return self.job
             
-        except APIError as e:
-            self.job.fail(str(e))
-            raise
         except Exception as e:
             self.job.fail(str(e))
             raise
@@ -183,7 +182,7 @@ class CLIDocumentationGenerator:
         
         # Build dependency graph
         try:
-            components, leaf_nodes = doc_generator.graph_builder.build_dependency_graph()
+            components, leaf_nodes, _graph = doc_generator.graph_builder.build_dependency_graph()
             self.job.statistics.total_files_analyzed = len(components)
             self.job.statistics.leaf_nodes = len(leaf_nodes)
             
@@ -196,24 +195,30 @@ class CLIDocumentationGenerator:
         
         # Stage 2: Module Clustering
         self.progress_tracker.start_stage(2, "Module Clustering")
-        if self.verbose:
-            self.progress_tracker.update_stage(0.5, "Clustering modules with LLM...")
-        
+
         # Import clustering function
         from codewiki.src.be.cluster_modules import cluster_modules
         from codewiki.src.utils import file_manager
         from codewiki.src.config import FIRST_MODULE_TREE_FILENAME, MODULE_TREE_FILENAME
-        
+
         working_dir = str(self.output_dir.absolute())
         file_manager.ensure_directory(working_dir)
         first_module_tree_path = os.path.join(working_dir, FIRST_MODULE_TREE_FILENAME)
         module_tree_path = os.path.join(working_dir, MODULE_TREE_FILENAME)
-        
+
         try:
             if os.path.exists(first_module_tree_path):
                 module_tree = file_manager.load_json(first_module_tree_path)
             else:
-                module_tree = cluster_modules(leaf_nodes, components, backend_config)
+                if self.config.get('use_agent_sdk'):
+                    if self.verbose:
+                        self.progress_tracker.update_stage(0.5, "Clustering modules with Agent SDK...")
+                    from codewiki.src.be.claude_agent_sdk_adapter import agent_sdk_cluster
+                    module_tree = await agent_sdk_cluster(leaf_nodes, components, backend_config)
+                else:
+                    if self.verbose:
+                        self.progress_tracker.update_stage(0.5, "Clustering modules with LLM...")
+                    module_tree = cluster_modules(leaf_nodes, components, backend_config)
                 file_manager.save_json(module_tree, first_module_tree_path)
             
             file_manager.save_json(module_tree, module_tree_path)

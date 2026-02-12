@@ -1,5 +1,8 @@
+import logging
 from pydantic_ai import RunContext, Tool
 from codewiki.src.be.agent_tools.deps import CodeWikiDeps
+
+logger = logging.getLogger(__name__)
 
 
 async def read_code_components(ctx: RunContext[CodeWikiDeps], component_ids: list[str]) -> str:
@@ -12,6 +15,7 @@ async def read_code_components(ctx: RunContext[CodeWikiDeps], component_ids: lis
     results = []
 
     for component_id in component_ids:
+        logger.info(f"📖 AI reading: {component_id}")
         if component_id not in ctx.deps.components:
             results.append(f"# Component {component_id} not found")
         else:

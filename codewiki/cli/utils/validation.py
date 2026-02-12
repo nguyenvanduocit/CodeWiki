@@ -172,6 +172,7 @@ def detect_supported_languages(directory: Path) -> List[Tuple[str, int]]:
         'C++': ['.cpp', '.hpp', '.cc', '.hh', '.cxx', '.hxx'],
         'C#': ['.cs'],
         'PHP': ['.php', '.phtml', '.inc'],
+        'Go': ['.go'],
     }
     
     # Directories to exclude from counting
@@ -188,19 +189,21 @@ def detect_supported_languages(directory: Path) -> List[Tuple[str, int]]:
         parts = file_path.parts
         return any(excluded_dir in parts for excluded_dir in excluded_dirs)
     
-    language_counts = {}
-    
+    # Build reverse mapping: extension -> language for O(1) lookup
+    ext_to_language = {}
     for language, extensions in language_extensions.items():
-        count = 0
         for ext in extensions:
-            # Filter out files in excluded directories
-            count += sum(
-                1 for f in directory.rglob(f"*{ext}")
-                if f.is_file() and not should_exclude_file(f)
-            )
-        
-        if count > 0:
-            language_counts[language] = count
+            ext_to_language[ext] = language
+
+    # Single filesystem traversal
+    language_counts = {}
+    for f in directory.rglob("*"):
+        if not f.is_file() or should_exclude_file(f):
+            continue
+        ext = f.suffix
+        if ext in ext_to_language:
+            lang = ext_to_language[ext]
+            language_counts[lang] = language_counts.get(lang, 0) + 1
     
     # Sort by count descending
     return sorted(language_counts.items(), key=lambda x: x[1], reverse=True)

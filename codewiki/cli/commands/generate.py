@@ -126,6 +126,11 @@ def parse_patterns(patterns_str: str) -> List[str]:
     default=None,
     help="Maximum depth for hierarchical decomposition (overrides config)",
 )
+@click.option(
+    "--use-agent-sdk",
+    is_flag=True,
+    help="Use Claude Agent SDK as the LLM backend instead of direct API calls",
+)
 @click.pass_context
 def generate_command(
     ctx,
@@ -142,7 +147,8 @@ def generate_command(
     max_tokens: Optional[int],
     max_token_per_module: Optional[int],
     max_token_per_leaf_module: Optional[int],
-    max_depth: Optional[int]
+    max_depth: Optional[int],
+    use_agent_sdk: bool,
 ):
     """
     Generate comprehensive documentation for a code repository.
@@ -187,6 +193,10 @@ def generate_command(
     \b
     # Override max depth for hierarchical decomposition
     $ codewiki generate --max-depth 3
+
+    \b
+    # Use Claude Agent SDK as the LLM backend
+    $ codewiki generate --use-agent-sdk
     """
     logger = create_logger(verbose=verbose)
     start_time = time.time()
@@ -359,6 +369,7 @@ def generate_command(
                 'max_token_per_leaf_module': max_token_per_leaf_module if max_token_per_leaf_module is not None else config.max_token_per_leaf_module,
                 # Max depth setting (runtime override takes precedence)
                 'max_depth': max_depth if max_depth is not None else config.max_depth,
+                'use_agent_sdk': use_agent_sdk,
             },
             verbose=verbose,
             generate_html=github_pages
@@ -381,7 +392,7 @@ def generate_command(
                 repo = git.Repo(repo_path)
                 if repo.remotes:
                     repo_url = repo.remotes.origin.url
-            except:
+            except Exception:
                 pass
         
         # Display instructions
@@ -400,15 +411,7 @@ def generate_command(
             }
         )
         
-    except ConfigurationError as e:
-        logger.error(e.message)
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        sys.exit(e.exit_code)
-    except RepositoryError as e:
-        logger.error(e.message)
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        sys.exit(e.exit_code)
-    except APIError as e:
+    except (ConfigurationError, RepositoryError, APIError) as e:
         logger.error(e.message)
         logger.error(f"Traceback: {traceback.format_exc()}")
         sys.exit(e.exit_code)

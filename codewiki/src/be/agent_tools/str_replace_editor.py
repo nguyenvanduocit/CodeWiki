@@ -746,9 +746,20 @@ async def str_replace_editor(
 
     tool = EditTool(ctx.deps.registry, ctx.deps.absolute_docs_path)
     if working_dir == "docs":
-        absolute_path = str(Path(ctx.deps.absolute_docs_path) / path)
+        base_dir = Path(ctx.deps.absolute_docs_path).resolve()
+        absolute_path = str((base_dir / path).resolve())
     else:
-        absolute_path = str(Path(ctx.deps.absolute_repo_path) / path)
+        base_dir = Path(ctx.deps.absolute_repo_path).resolve()
+        absolute_path = str((base_dir / path).resolve())
+
+    if not absolute_path.startswith(str(base_dir)):
+        return f"Error: Path traversal detected. Path must stay within {base_dir}"
+
+    # Log AI actions for visibility
+    if command == "create":
+        logger.info(f"✏️  AI creating: {path}")
+    elif command == "str_replace":
+        logger.info(f"✏️  AI editing: {path}")
 
     # validate command
     if command != "view" and working_dir == "repo":

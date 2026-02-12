@@ -8,6 +8,8 @@ from codewiki.src.be.prompt_template import SYSTEM_PROMPT, LEAF_SYSTEM_PROMPT, f
 from codewiki.src.be.utils import is_complex_module, count_tokens
 from codewiki.src.be.cluster_modules import format_potential_core_components
 
+from codewiki.src.be.utils import log_token_usage
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,8 @@ async def generate_sub_module_documentation(
             ),
             deps=ctx.deps
         )
+
+        log_token_usage(result, prefix=f"{indent}  ")
 
         # remove the sub-module name from the path to current module and the module tree
         deps.path_to_current_module.pop()

@@ -1,39 +1,10 @@
 from pydantic_ai import Agent
-# import logfire
 import logging
 import os
 import traceback
 from typing import Dict, List, Any
 
-# Configure logging and monitoring
-
 logger = logging.getLogger(__name__)
-
-# try:
-#     # Configure logfire with environment variables for Docker compatibility
-#     logfire_token = os.getenv('LOGFIRE_TOKEN')
-#     logfire_project = os.getenv('LOGFIRE_PROJECT_NAME', 'default')
-#     logfire_service = os.getenv('LOGFIRE_SERVICE_NAME', 'default')
-    
-#     if logfire_token:
-#         # Configure with explicit token (for Docker)
-#         logfire.configure(
-#             token=logfire_token,
-#             project_name=logfire_project,
-#             service_name=logfire_service,
-#         )
-#     else:
-#         # Use default configuration (for local development with logfire auth)
-#         logfire.configure(
-#             project_name=logfire_project,
-#             service_name=logfire_service,
-#         )
-    
-#     logfire.instrument_pydantic_ai()
-#     logger.debug(f"Logfire configured successfully for project: {logfire_project}")
-    
-# except Exception as e:
-#     logger.warning(f"Failed to configure logfire: {e}")
 
 # Local imports
 from codewiki.src.be.agent_tools.deps import CodeWikiDeps
@@ -46,7 +17,7 @@ from codewiki.src.be.prompt_template import (
     format_system_prompt,
     format_leaf_system_prompt,
 )
-from codewiki.src.be.utils import is_complex_module
+from codewiki.src.be.utils import is_complex_module, log_token_usage
 from codewiki.src.config import (
     Config,
     MODULE_TREE_FILENAME,
@@ -130,6 +101,7 @@ class AgentOrchestrator:
         
         # Run agent
         try:
+            logger.info(f"🤖 AI agent started for: {module_name}")
             result = await agent.run(
                 format_user_prompt(
                     module_name=module_name,
@@ -139,10 +111,12 @@ class AgentOrchestrator:
                 ),
                 deps=deps
             )
-            
+
+            log_token_usage(result)
+
             # Save updated module tree
             file_manager.save_json(deps.module_tree, module_tree_path)
-            logger.debug(f"Successfully processed module: {module_name}")
+            logger.info(f"✅ AI agent completed: {module_name}")
             
             return deps.module_tree
             

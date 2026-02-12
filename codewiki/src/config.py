@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 import argparse
 import os
-import sys
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -18,9 +17,6 @@ MAX_DEPTH = 2
 DEFAULT_MAX_TOKENS = 32_768
 DEFAULT_MAX_TOKEN_PER_MODULE = 36_369
 DEFAULT_MAX_TOKEN_PER_LEAF_MODULE = 16_000
-# Legacy constants (for backward compatibility)
-MAX_TOKEN_PER_MODULE = DEFAULT_MAX_TOKEN_PER_MODULE
-MAX_TOKEN_PER_LEAF_MODULE = DEFAULT_MAX_TOKEN_PER_LEAF_MODULE
 
 # CLI context detection
 _CLI_CONTEXT = False
@@ -63,7 +59,10 @@ class Config:
     max_token_per_leaf_module: int = DEFAULT_MAX_TOKEN_PER_LEAF_MODULE
     # Agent instructions for customization
     agent_instructions: Optional[Dict[str, Any]] = None
-    
+    # Backend selection
+    use_agent_sdk: bool = False
+    no_cache: bool = False
+
     @property
     def include_patterns(self) -> Optional[List[str]]:
         """Get file include patterns from agent instructions."""
@@ -159,7 +158,9 @@ class Config:
         max_token_per_module: int = DEFAULT_MAX_TOKEN_PER_MODULE,
         max_token_per_leaf_module: int = DEFAULT_MAX_TOKEN_PER_LEAF_MODULE,
         max_depth: int = MAX_DEPTH,
-        agent_instructions: Optional[Dict[str, Any]] = None
+        agent_instructions: Optional[Dict[str, Any]] = None,
+        use_agent_sdk: bool = False,
+        no_cache: bool = False
     ) -> 'Config':
         """
         Create configuration for CLI context.
@@ -198,5 +199,7 @@ class Config:
             max_tokens=max_tokens,
             max_token_per_module=max_token_per_module,
             max_token_per_leaf_module=max_token_per_leaf_module,
-            agent_instructions=agent_instructions
+            agent_instructions=agent_instructions,
+            use_agent_sdk=use_agent_sdk,
+            no_cache=no_cache
         )

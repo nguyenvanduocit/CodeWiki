@@ -12,6 +12,23 @@ logger = logging.getLogger(__name__)
 # ---------------------- Complexity Check --------------------
 # ------------------------------------------------------------
 
+def log_token_usage(result, prefix: str = "") -> None:
+    """Log token usage from a pydantic-ai agent result."""
+    if not (hasattr(result, 'usage') and result.usage):
+        return
+    usage = result.usage
+    total_tokens = (
+        getattr(usage, 'total_tokens', None)
+        or (usage.request_tokens + usage.response_tokens
+            if hasattr(usage, 'request_tokens') and hasattr(usage, 'response_tokens')
+            else 0)
+    )
+    logger.info(
+        f"{prefix}Token usage: input={getattr(usage, 'request_tokens', '?')}, "
+        f"output={getattr(usage, 'response_tokens', '?')}, total={total_tokens}"
+    )
+
+
 def is_complex_module(components: dict[str, any], core_component_ids: list[str]) -> bool:
     files = set()
     for component_id in core_component_ids:

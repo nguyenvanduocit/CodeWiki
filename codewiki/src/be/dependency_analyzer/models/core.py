@@ -39,6 +39,16 @@ class Node(BaseModel):
 
     component_id: Optional[str] = None
 
+    # Graph metrics
+    pagerank: float = 0.0
+    fan_in: int = 0
+    fan_out: int = 0
+    instability: float = 0.0
+    is_hub: bool = False
+    community_id: int = -1
+    tfidf_keywords: List[tuple] = []
+    complexity_score: float = 0.0
+
     def get_display_name(self) -> str:
         return self.display_name or self.name
 

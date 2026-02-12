@@ -1,5 +1,6 @@
 from typing import List, Dict, Any
 from collections import defaultdict
+import json
 import logging
 import traceback
 logger = logging.getLogger(__name__)
@@ -38,6 +39,18 @@ def format_potential_core_components(leaf_nodes: List[str], components: Dict[str
             potential_core_components_with_code += f"\t{leaf_node}\n"
             potential_core_components_with_code += f"{components[leaf_node].source_code}\n"
 
+    # Add community groupings as hints
+    communities = defaultdict(list)
+    for leaf_node in valid_leaf_nodes:
+        cid = components[leaf_node].community_id
+        if cid >= 0:
+            communities[cid].append(leaf_node)
+
+    if communities:
+        potential_core_components += "\n# Algorithm-detected community groupings (hints):\n"
+        for cid, members in sorted(communities.items()):
+            potential_core_components += f"# Community {cid}: {', '.join(members)}\n"
+
     return potential_core_components, potential_core_components_with_code
 
 
@@ -45,13 +58,17 @@ def cluster_modules(
     leaf_nodes: List[str],
     components: Dict[str, Node],
     config: Config,
-    current_module_tree: dict[str, Any] = {},
+    current_module_tree: dict[str, Any] = None,
     current_module_name: str = None,
-    current_module_path: List[str] = []
+    current_module_path: List[str] = None
 ) -> Dict[str, Any]:
     """
     Cluster the potential core components into modules.
     """
+    if current_module_tree is None:
+        current_module_tree = {}
+    if current_module_path is None:
+        current_module_path = []
     potential_core_components, potential_core_components_with_code = format_potential_core_components(leaf_nodes, components)
 
     if count_tokens(potential_core_components_with_code) <= config.max_token_per_module:
@@ -68,7 +85,7 @@ def cluster_modules(
             return {}
         
         response_content = response.split("<GROUPED_COMPONENTS>")[1].split("</GROUPED_COMPONENTS>")[0]
-        module_tree = eval(response_content)
+        module_tree = json.loads(response_content)
         
         if not isinstance(module_tree, dict):
             logger.error(f"Invalid module tree format - expected dict, got {type(module_tree)}")
@@ -84,14 +101,14 @@ def cluster_modules(
         logger.debug(f"Skipping clustering for {current_module_name} because the module tree is too small: {len(module_tree)} modules")
         return {}
 
-    if current_module_tree == {}:
+    if not current_module_tree:
         current_module_tree = module_tree
     else:
         value = current_module_tree
         for key in current_module_path:
             value = value[key]["children"]
         for module_name, module_info in module_tree.items():
-            del module_info["path"]
+            module_info.pop("path", None)
             value[module_name] = module_info
 
     for module_name, module_info in module_tree.items():

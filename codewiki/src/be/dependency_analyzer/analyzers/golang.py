@@ -36,7 +36,7 @@ GO_BUILTINS: Set[str] = {
 class TreeSitterGoAnalyzer:
     """Analyzes Go files using tree-sitter to extract nodes and relationships."""
 
-    def __init__(self, file_path: str, content: str, repo_path: str = None):
+    def __init__(self, file_path: str, content: str, repo_path: Optional[str] = None):
         self.file_path = Path(file_path)
         self.content = content or ""
         self.repo_path = repo_path or ""
@@ -171,26 +171,7 @@ class TreeSitterGoAnalyzer:
             name_node = self._find_child_by_type(node, "field_identifier")
             node_name = name_node.text.decode() if name_node else None
 
-            # Extract receiver type
-            receiver_node = self._find_child_by_type(node, "parameter_list")
-            if receiver_node:
-                for child in receiver_node.children:
-                    if child.type == "parameter_declaration":
-                        type_node = self._find_child_by_type(child, "type_identifier")
-                        if type_node:
-                            receiver_type = type_node.text.decode()
-                        # Handle pointer receiver: *Type
-                        elif child.text:
-                            text = child.text.decode()
-                            if text.startswith('*'):
-                                receiver_type = text[1:]
-                            else:
-                                # Look for type_identifier in children
-                                for subchild in child.children:
-                                    if subchild.type == "type_identifier":
-                                        receiver_type = subchild.text.decode()
-                                        break
-                        break
+            receiver_type = self._extract_method_receiver_type(node)
 
         # Type declaration: type Name struct/interface
         elif node.type == "type_declaration":
@@ -303,16 +284,7 @@ class TreeSitterGoAnalyzer:
             name_node = self._find_child_by_type(node, "field_identifier")
             if name_node:
                 self._current_function = name_node.text.decode()
-                # Extract receiver type
-                receiver_node = self._find_child_by_type(node, "parameter_list")
-                if receiver_node:
-                    for child in receiver_node.children:
-                        if child.type == "parameter_declaration":
-                            for subchild in child.children:
-                                if subchild.type == "type_identifier":
-                                    self._current_method_receiver = subchild.text.decode()
-                                    break
-                            break
+                self._current_method_receiver = self._extract_method_receiver_type(node)
 
         # Handle call expressions
         if node.type == "call_expression":
@@ -484,6 +456,67 @@ class TreeSitterGoAnalyzer:
             if child.type == child_type:
                 return child
         return None
+
+    def _extract_method_receiver_type(self, method_node) -> Optional[str]:
+        """Extract receiver type from a method declaration, including pointer receivers."""
+        receiver_node = self._find_child_by_type(method_node, "parameter_list")
+        if not receiver_node:
+            return None
+
+        for child in receiver_node.children:
+            if child.type != "parameter_declaration":
+                continue
+            receiver_type = self._extract_receiver_type_from_declaration(child)
+            if receiver_type:
+                return receiver_type
+        return None
+
+    def _extract_receiver_type_from_declaration(self, parameter_node) -> Optional[str]:
+        """Extract receiver type from a parameter_declaration node."""
+        for child in reversed(parameter_node.children):
+            if child.type in {"identifier", ","}:
+                continue
+            text = child.text.decode() if child.text else ""
+            receiver_type = self._normalize_receiver_type(text)
+            if receiver_type:
+                return receiver_type
+
+        # Fallback: parse raw declaration text, e.g. "p *ProductWrapper"
+        raw_text = parameter_node.text.decode() if parameter_node.text else ""
+        return self._normalize_receiver_type(raw_text)
+
+    def _normalize_receiver_type(self, text: str) -> Optional[str]:
+        """Normalize receiver type text to a stable component ID segment."""
+        if not text:
+            return None
+
+        type_text = text.strip()
+        if not type_text:
+            return None
+
+        # parameter_declaration fallback can include parameter names.
+        if " " in type_text:
+            type_text = type_text.split()[-1]
+
+        while type_text.startswith("(") and type_text.endswith(")") and len(type_text) > 2:
+            type_text = type_text[1:-1].strip()
+
+        while type_text.startswith("*"):
+            type_text = type_text[1:].strip()
+
+        while type_text.startswith("[]"):
+            type_text = type_text[2:].strip()
+
+        # Generic receiver instantiation, e.g. Receiver[T]
+        if "[" in type_text:
+            type_text = type_text.split("[", 1)[0]
+
+        # Strip package qualifier, e.g. pkg.Receiver
+        if "." in type_text:
+            type_text = type_text.split(".")[-1]
+
+        type_text = type_text.strip().strip(",")
+        return type_text or None
 
     def _get_preceding_docstring(self, node, lines: List[str]) -> str:
         """Extract Go comment preceding a node."""

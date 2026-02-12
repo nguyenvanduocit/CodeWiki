@@ -13,7 +13,6 @@ DEFAULT_IGNORE_PATTERNS = {
     ".git",
     ".gitignore",
     ".gitmodules",
-    ".gitignore",
     "examples",
     # Python
     "*.pyc",
@@ -29,7 +28,8 @@ DEFAULT_IGNORE_PATTERNS = {
     ".hypothesis",
     "poetry.lock",
     "Pipfile.lock",
-    # JavaScript/FileSystemNode
+    # JavaScript/TypeScript
+    "node_modules",
     "package-lock.json",
     "yarn.lock",
     ".npm",
@@ -37,6 +37,7 @@ DEFAULT_IGNORE_PATTERNS = {
     ".pnpm-store",
     "bun.lock",
     "bun.lockb",
+    "jspm_packages",
     # Java
     "*.class",
     "*.jar",
@@ -69,12 +70,9 @@ DEFAULT_IGNORE_PATTERNS = {
     # Go / .NET / C#
     "bin/",
     # Version control
-    ".git",
     ".svn",
     ".hg",
-    ".gitignore",
     ".gitattributes",
-    ".gitmodules",
     # Images and media
     "*.svg",
     "*.png",
@@ -95,7 +93,6 @@ DEFAULT_IGNORE_PATTERNS = {
     "virtualenv",
     # IDEs and editors
     ".idea",
-    ".vscode",
     ".vs",
     "*.swo",
     "*.swn",
@@ -112,6 +109,11 @@ DEFAULT_IGNORE_PATTERNS = {
     "Thumbs.db",
     "desktop.ini",
     # Build directories and artifacts
+    "dist",
+    "build",
+    "target",  # Maven/Gradle
+    "obj",  # .NET
+    "out",
     "*.egg-info",
     "*.egg",
     "*.whl",
@@ -127,15 +129,22 @@ DEFAULT_IGNORE_PATTERNS = {
     ## Terraform
     ".terraform",
     "*.tfstate*",
+    ## iOS/macOS
+    "Pods",
+    "*.xcworkspace",
+    "*.xcuserdata",
+    "DerivedData",
+    ## Rust
+    ".cargo",
     ## Dependencies in various languages
+    "vendor",  # Go/PHP
+    "Godeps",  # Go legacy
     # Gitingest
     "digest.txt",
-    "*.ini",
     "tests",
     "test",
     "Tests",
     "Test",
-    "examples",
     "Examples",
 }
 
