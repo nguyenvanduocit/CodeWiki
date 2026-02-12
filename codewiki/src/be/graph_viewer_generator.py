@@ -158,6 +158,10 @@ nodeGroup.on("click", (e, d) => {{
   html += `<div class="metric"><span class="metric-label">Fan-out</span><span class="metric-value">${{m.fan_out||0}}</span></div>`;
   html += `<div class="metric"><span class="metric-label">Instability</span><span class="metric-value">${{(m.instability||0).toFixed(3)}}</span></div>`;
   html += `<div class="metric"><span class="metric-label">Complexity</span><span class="metric-value">${{(m.complexity_score||0).toFixed(1)}}</span></div>`;
+  html += `<div class="metric"><span class="metric-label">Betweenness</span><span class="metric-value">${{(m.betweenness_centrality||0).toFixed(4)}}</span></div>`;
+  html += `<div class="metric"><span class="metric-label">Cyclomatic CC</span><span class="metric-value">${{m.cyclomatic_complexity||0}}</span></div>`;
+  html += `<div class="metric"><span class="metric-label">Cognitive CC</span><span class="metric-value">${{m.cognitive_complexity||0}}</span></div>`;
+  html += `<div class="metric"><span class="metric-label">Maintainability</span><span class="metric-value">${{(m.maintainability_index||100).toFixed(1)}}</span></div>`;
   html += `<div class="metric"><span class="metric-label">Community</span><span class="metric-value">${{d.community_id}}</span></div>`;
   if (m.tfidf_keywords && m.tfidf_keywords.length) {{
     html += `<div class="keywords">`;
@@ -184,9 +188,50 @@ searchInput.on("input", function() {{
   link.classed("node-dim", d => !matches.has(d.source.id) && !matches.has(d.target.id));
 }});
 
+// Community cluster hulls
+const hullG = g.insert("g", ":first-child");
+const hullPadding = 30;
+
+function updateHulls() {{
+  const communityNodes = {{}};
+  nodes.forEach(n => {{
+    if (n.community_id >= 0) {{
+      if (!communityNodes[n.community_id]) communityNodes[n.community_id] = [];
+      communityNodes[n.community_id].push([n.x, n.y]);
+    }}
+  }});
+
+  hullG.selectAll("path.hull").remove();
+  Object.entries(communityNodes).forEach(([cid, points]) => {{
+    if (points.length < 3) return;
+    const hull = d3.polygonHull(points);
+    if (!hull) return;
+
+    const centroid = d3.polygonCentroid(hull);
+    const expanded = hull.map(([x, y]) => {{
+      const dx = x - centroid[0];
+      const dy = y - centroid[1];
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      const scale = (dist + hullPadding) / dist;
+      return [centroid[0] + dx * scale, centroid[1] + dy * scale];
+    }});
+
+    hullG.append("path")
+      .attr("class", "hull")
+      .attr("d", `M${{expanded.map(p => p.join(",")).join("L")}}Z`)
+      .attr("fill", colors(parseInt(cid)))
+      .attr("fill-opacity", 0.06)
+      .attr("stroke", colors(parseInt(cid)))
+      .attr("stroke-opacity", 0.2)
+      .attr("stroke-width", 1.5)
+      .attr("stroke-dasharray", "4,4");
+  }});
+}}
+
 simulation.on("tick", () => {{
   link.attr("x1",d=>d.source.x).attr("y1",d=>d.source.y).attr("x2",d=>d.target.x).attr("y2",d=>d.target.y);
   nodeGroup.attr("transform", d => `translate(${{d.x}},${{d.y}})`);
+  updateHulls();
 }});
 
 // Legend

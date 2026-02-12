@@ -26,6 +26,7 @@ def _dispatch_language_analyzer(
     Dispatch to the appropriate language-specific analyzer.
 
     Must be at module level for pickle compatibility with multiprocessing.
+    Tries query-based analyzer first, falls back to hand-coded analyzers.
 
     Args:
         language: Programming language identifier
@@ -36,6 +37,17 @@ def _dispatch_language_analyzer(
     Returns:
         Tuple of (nodes, relationships) or None if language is unsupported
     """
+    # Try query-based analyzer first (skip Go: hand-coded analyzer has type resolution)
+    if language != "go":
+        try:
+            from codewiki.src.be.dependency_analyzer.query_analyzer import analyze_file_with_queries
+            result = analyze_file_with_queries(language, file_path, content, repo_dir)
+            if result is not None:
+                return result
+        except Exception as e:
+            logger.debug(f"Query-based analyzer failed for {language}, falling back: {e}")
+
+    # Fall back to hand-coded analyzers
     if language == "python":
         from codewiki.src.be.dependency_analyzer.analyzers.python import analyze_python_file
         return analyze_python_file(file_path, content, repo_path=repo_dir)
@@ -273,6 +285,11 @@ class CallGraphAnalyzer:
                 method_name = func_info.component_id.split(".")[-1]
                 if method_name not in func_lookup:
                     func_lookup[method_name] = func_id
+            # Add ReceiverType.MethodName key for method resolution
+            if func_info.class_name and func_info.name:
+                class_method_key = f"{func_info.class_name}.{func_info.name}"
+                if class_method_key not in func_lookup:
+                    func_lookup[class_method_key] = func_id
 
         for relationship in self.call_relationships:
             callee_name = relationship.callee

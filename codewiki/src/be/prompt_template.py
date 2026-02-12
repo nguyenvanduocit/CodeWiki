@@ -11,6 +11,16 @@ Create documentation that helps developers and maintainers understand:
 4. Use the provided analysis metrics (PageRank, hub detection, complexity, TF-IDF keywords) to prioritize documentation depth — architecturally critical components deserve more detailed coverage
 </OBJECTIVES>
 
+<GENERATED_ARTIFACTS>
+Pre-computed analysis artifacts are available in the docs directory. Read them for deeper architectural context:
+- `codebase_map.json`: Dependency graph summary with per-component metrics (PageRank, betweenness, complexity, community IDs), circular dependencies, temporal couplings, and architectural violations
+- `graph.html`: Interactive D3.js visualization of the dependency graph with community clusters
+- `temp/dependency_graphs/`: Full dependency graph JSON with complete component data (source code, all metrics, dependency edges)
+- `module_tree.json`: Hierarchical module decomposition tree
+
+Use `str_replace_editor` with `working_dir="docs"` and `command="view"` to read these files. Use the metrics to prioritize documentation depth — architecturally critical components deserve more detailed coverage.
+</GENERATED_ARTIFACTS>
+
 <DOCUMENTATION_STRUCTURE>
 Generate documentation following this structure:
 
@@ -58,6 +68,16 @@ Create a comprehensive documentation that helps developers and maintainers under
 3. How the module fits into the overall system
 4. Use the provided analysis metrics (PageRank, hub detection, complexity, TF-IDF keywords) to prioritize documentation depth — architecturally critical components deserve more detailed coverage
 </OBJECTIVES>
+
+<GENERATED_ARTIFACTS>
+Pre-computed analysis artifacts are available in the docs directory. Read them for deeper architectural context:
+- `codebase_map.json`: Dependency graph summary with per-component metrics (PageRank, betweenness, complexity, community IDs), circular dependencies, temporal couplings, and architectural violations
+- `graph.html`: Interactive D3.js visualization of the dependency graph with community clusters
+- `temp/dependency_graphs/`: Full dependency graph JSON with complete component data (source code, all metrics, dependency edges)
+- `module_tree.json`: Hierarchical module decomposition tree
+
+Use `str_replace_editor` with `working_dir="docs"` and `command="view"` to read these files. Use the metrics to prioritize documentation depth — architecturally critical components deserve more detailed coverage.
+</GENERATED_ARTIFACTS>
 
 <DOCUMENTATION_REQUIREMENTS>
 Generate documentation following the following requirements:
@@ -215,9 +235,12 @@ Please shortlist the files, folders representing the core functionality and igno
 Reasoning at first, then return the list of relative paths in JSON format.
 """
 
+import logging
 from typing import Dict, Any, List
 from codewiki.src.utils import file_manager
 from codewiki.src.be.dependency_analyzer.models.core import Node
+
+logger = logging.getLogger(__name__)
 
 EXTENSION_TO_LANGUAGE = {
     ".py": "python",
@@ -289,6 +312,7 @@ def format_component_metrics(component_ids: list[str], components: Dict[str, Any
             node = components[cid]
             lines.append(
                 f"- **{node.name}** (PageRank: {node.pagerank:.4f}, "
+                f"betweenness: {node.betweenness_centrality:.4f}, "
                 f"fan-in: {node.fan_in}, fan-out: {node.fan_out}) — "
                 f"high connectivity, document thoroughly"
             )
@@ -318,8 +342,8 @@ def format_component_metrics(component_ids: list[str], components: Dict[str, Any
         for cid in complex_comps:
             node = components[cid]
             lines.append(
-                f"- **{node.name}** (complexity: {node.complexity_score:.1f}/100) — "
-                f"document logic flow carefully"
+                f"- **{node.name}** (CC: {node.cyclomatic_complexity}, cognitive: {node.cognitive_complexity}, "
+                f"MI: {node.maintainability_index:.1f}/100) — document logic flow carefully"
             )
         sections.append("\n".join(lines))
 
@@ -394,7 +418,8 @@ def format_user_prompt(module_name: str, core_component_ids: list[str], componen
         try:
             core_component_codes += file_manager.load_text(components[component_ids_in_file[0]].file_path)
         except (FileNotFoundError, IOError) as e:
-            core_component_codes += f"# Error reading file: {e}\n"
+            logger.error(f"Cannot read source file {components[component_ids_in_file[0]].file_path}: {e}")
+            core_component_codes += f"# File content unavailable\n"
         
         core_component_codes += "```\n\n"
         

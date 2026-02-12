@@ -112,6 +112,13 @@ class DependencyParser:
             caller_component_id = component_id_mapping.get(caller_id)
             
             callee_component_id = component_id_mapping.get(callee_id)
+            if not callee_component_id and "." in callee_id:
+                # Try matching by ReceiverType.MethodName
+                class_hint, method_name = callee_id.rsplit(".", 1)
+                for comp_id, comp_node in self.components.items():
+                    if comp_node.name == method_name and comp_node.class_name == class_hint:
+                        callee_component_id = comp_id
+                        break
             if not callee_component_id:
                 for comp_id, comp_node in self.components.items():
                     if comp_node.name == callee_id:

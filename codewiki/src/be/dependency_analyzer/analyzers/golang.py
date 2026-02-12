@@ -47,6 +47,11 @@ class TreeSitterGoAnalyzer:
         self._import_map: Dict[str, str] = {}  # alias -> full package path
         self._current_function: Optional[str] = None
         self._current_method_receiver: Optional[str] = None
+        self._current_receiver_var: Optional[str] = None
+        # Type resolution context
+        self._struct_fields: Dict[str, Dict[str, str]] = {}  # StructName -> {field: Type}
+        self._func_signatures: Dict[str, Dict] = {}  # func_key -> {params: {name: type}, returns: [type]}
+        self._current_scope_vars: Dict[str, str] = {}  # var_name -> Type (per-function)
 
         self._analyze()
 
@@ -100,7 +105,10 @@ class TreeSitterGoAnalyzer:
             # Second pass: extract nodes (functions, methods, types)
             self._extract_nodes(root, lines)
 
-            # Third pass: extract call relationships
+            # Pass 2.5: build type context (struct fields, function signatures)
+            self._build_type_context(root)
+
+            # Third pass: extract call relationships (with type resolution)
             self._extract_call_relationships(root)
 
         except Exception as e:
@@ -268,23 +276,324 @@ class TreeSitterGoAnalyzer:
         self.nodes.append(node_obj)
         self._top_level_nodes[name] = node_obj
 
+    # ── Type resolution infrastructure ──
+
+    def _build_type_context(self, root):
+        """Extract struct field types and function signatures for type resolution."""
+        for child in root.children:
+            if child.type == "type_declaration":
+                self._extract_struct_field_types(child)
+            elif child.type == "function_declaration":
+                self._extract_func_signature(child)
+            elif child.type == "method_declaration":
+                self._extract_method_signature(child)
+
+    def _extract_struct_field_types(self, node):
+        """Extract field names and types from struct declarations."""
+        for child in node.children:
+            if child.type != "type_spec":
+                continue
+            name_node = self._find_child_by_type(child, "type_identifier")
+            struct_node = self._find_child_by_type(child, "struct_type")
+            if not name_node or not struct_node:
+                continue
+            struct_name = name_node.text.decode()
+            self._struct_fields[struct_name] = {}
+            field_list = self._find_child_by_type(struct_node, "field_declaration_list")
+            if not field_list:
+                continue
+            for field in field_list.children:
+                if field.type != "field_declaration":
+                    continue
+                names = [c.text.decode() for c in field.children if c.type == "identifier"]
+                type_node = None
+                for c in field.children:
+                    if c.type in ("type_identifier", "qualified_type", "pointer_type",
+                                  "slice_type", "map_type", "chan_type",
+                                  "interface_type", "function_type", "struct_type"):
+                        type_node = c
+                        break
+                if type_node and names:
+                    field_type = self._normalize_type_name(type_node.text.decode())
+                    for name in names:
+                        self._struct_fields[struct_name][name] = field_type
+
+    def _extract_func_signature(self, node):
+        """Extract function parameter types and return types."""
+        name_node = self._find_child_by_type(node, "identifier")
+        if not name_node:
+            return
+        func_name = name_node.text.decode()
+        params = self._extract_param_types_from_func(node)
+        returns = self._extract_return_types_from_func(node)
+        self._func_signatures[func_name] = {"params": params, "returns": returns}
+
+    def _extract_method_signature(self, node):
+        """Extract method parameter types and return types."""
+        name_node = self._find_child_by_type(node, "field_identifier")
+        receiver_type = self._extract_method_receiver_type(node)
+        if not name_node:
+            return
+        method_name = name_node.text.decode()
+        key = f"{receiver_type}.{method_name}" if receiver_type else method_name
+        param_lists = [c for c in node.children if c.type == "parameter_list"]
+        params = {}
+        if len(param_lists) >= 2:
+            for child in param_lists[1].children:
+                if child.type == "parameter_declaration":
+                    p_names, p_type = self._extract_param_name_and_type(child)
+                    if p_type:
+                        for pn in p_names:
+                            params[pn] = p_type
+        returns = self._extract_return_types_from_func(node)
+        self._func_signatures[key] = {"params": params, "returns": returns}
+
+    def _extract_param_types_from_func(self, func_node) -> Dict[str, str]:
+        """Extract parameter name-to-type mapping from a function node."""
+        params = {}
+        start_idx = 0
+        if func_node.type == "method_declaration":
+            for i, child in enumerate(func_node.children):
+                if child.type == "parameter_list":
+                    start_idx = i + 1
+                    break
+        for child in func_node.children[start_idx:]:
+            if child.type == "parameter_list":
+                for param in child.children:
+                    if param.type == "parameter_declaration":
+                        p_names, p_type = self._extract_param_name_and_type(param)
+                        if p_type:
+                            for pn in p_names:
+                                params[pn] = p_type
+                break
+        return params
+
+    def _extract_param_name_and_type(self, param_node) -> Tuple[List[str], Optional[str]]:
+        """Extract parameter names and their type from a parameter_declaration."""
+        names = []
+        param_type = None
+        for child in param_node.children:
+            if child.type == "identifier":
+                names.append(child.text.decode())
+            elif child.type in ("type_identifier", "qualified_type", "pointer_type",
+                                "slice_type", "map_type", "chan_type", "interface_type"):
+                param_type = self._normalize_type_name(child.text.decode())
+        return names, param_type
+
+    def _extract_return_types_from_func(self, func_node) -> List[str]:
+        """Extract return types from a function/method declaration."""
+        types = []
+        param_lists = [i for i, c in enumerate(func_node.children) if c.type == "parameter_list"]
+        if not param_lists:
+            return types
+        last_param_idx = param_lists[-1]
+        for child in func_node.children[last_param_idx + 1:]:
+            if child.type == "block":
+                break
+            if child.type in ("type_identifier", "qualified_type", "pointer_type",
+                              "slice_type", "map_type"):
+                types.append(self._normalize_type_name(child.text.decode()))
+            elif child.type == "parameter_list":
+                for pc in child.children:
+                    if pc.type == "parameter_declaration":
+                        for pcc in pc.children:
+                            if pcc.type in ("type_identifier", "qualified_type", "pointer_type"):
+                                types.append(self._normalize_type_name(pcc.text.decode()))
+                    elif pc.type in ("type_identifier", "qualified_type", "pointer_type"):
+                        types.append(self._normalize_type_name(pc.text.decode()))
+        return types
+
+    def _normalize_type_name(self, type_text: str) -> str:
+        """Normalize a Go type to its base type name (strip *, [], package prefix)."""
+        t = type_text.strip()
+        while t.startswith("*"):
+            t = t[1:].strip()
+        while t.startswith("[]"):
+            t = t[2:].strip()
+        if "." in t:
+            t = t.split(".")[-1]
+        return t
+
+    def _build_function_scope(self, func_node):
+        """Build variable type scope for a function/method body."""
+        self._current_scope_vars = {}
+        # Add parameter types to scope
+        func_key = self._current_function
+        if self._current_method_receiver:
+            func_key = f"{self._current_method_receiver}.{self._current_function}"
+        sig = self._func_signatures.get(func_key) or self._func_signatures.get(self._current_function)
+        if sig:
+            for param_name, param_type in sig.get("params", {}).items():
+                self._current_scope_vars[param_name] = param_type
+        # Add receiver variable
+        if self._current_receiver_var and self._current_method_receiver:
+            self._current_scope_vars[self._current_receiver_var] = self._current_method_receiver
+        # Walk body for variable declarations
+        body = self._find_child_by_type(func_node, "block")
+        if body:
+            self._walk_for_var_types(body)
+
+    def _walk_for_var_types(self, node, depth: int = 0):
+        """Walk AST nodes to find variable declarations and infer their types."""
+        if depth > 50:
+            return
+        if node.type == "short_var_declaration":
+            self._process_short_var_decl(node)
+        elif node.type == "var_declaration":
+            self._process_var_decl(node)
+        for child in node.children:
+            self._walk_for_var_types(child, depth + 1)
+
+    def _process_short_var_decl(self, node):
+        """Process `x := expr` to extract variable types."""
+        left = None
+        right = None
+        for child in node.children:
+            if child.type == "expression_list":
+                if left is None:
+                    left = child
+                else:
+                    right = child
+        if not left or not right:
+            return
+        left_names = [c.text.decode() for c in left.children if c.type == "identifier"]
+        right_exprs = [c for c in right.children if c.type != ","]
+        for i, name in enumerate(left_names):
+            if i < len(right_exprs):
+                inferred = self._infer_type_from_expr(right_exprs[i])
+                if inferred:
+                    self._current_scope_vars[name] = inferred
+
+    def _process_var_decl(self, node):
+        """Process `var x Type` declarations."""
+        for child in node.children:
+            if child.type != "var_spec":
+                continue
+            names = []
+            var_type = None
+            for c in child.children:
+                if c.type == "identifier":
+                    names.append(c.text.decode())
+                elif c.type in ("type_identifier", "qualified_type", "pointer_type",
+                                "slice_type", "map_type"):
+                    var_type = self._normalize_type_name(c.text.decode())
+            if var_type:
+                for name in names:
+                    self._current_scope_vars[name] = var_type
+
+    def _infer_type_from_expr(self, expr) -> Optional[str]:
+        """Infer type from a single expression (composite literal, &T{}, call, type assertion)."""
+        # Composite literal: Type{...}
+        if expr.type == "composite_literal":
+            type_node = expr.children[0] if expr.children else None
+            if type_node and type_node.type in ("type_identifier", "qualified_type"):
+                return self._normalize_type_name(type_node.text.decode())
+        # Address-of composite: &Type{...}
+        if expr.type == "unary_expression" and len(expr.children) >= 2:
+            if expr.children[0].type == "&":
+                inner = expr.children[1]
+                if inner.type == "composite_literal" and inner.children:
+                    type_node = inner.children[0]
+                    if type_node.type in ("type_identifier", "qualified_type"):
+                        return self._normalize_type_name(type_node.text.decode())
+        # Call expression: NewService() or pkg.New()
+        if expr.type == "call_expression" and expr.children:
+            func_node = expr.children[0]
+            func_name = None
+            if func_node.type == "identifier":
+                func_name = func_node.text.decode()
+            elif func_node.type == "selector_expression":
+                field = self._find_child_by_type(func_node, "field_identifier")
+                if field:
+                    func_name = field.text.decode()
+            if func_name:
+                sig = self._func_signatures.get(func_name)
+                if sig and sig.get("returns"):
+                    return sig["returns"][0]
+                # Heuristic: NewFoo() -> Foo
+                if func_name.startswith("New") and len(func_name) > 3:
+                    return func_name[3:]
+        # Type assertion: x.(Type)
+        if expr.type == "type_assertion_expression":
+            for child in expr.children:
+                if child.type in ("type_identifier", "qualified_type", "pointer_type"):
+                    return self._normalize_type_name(child.text.decode())
+        return None
+
+    def _resolve_receiver_type(self, var_name: str) -> Optional[str]:
+        """Resolve a variable name to its actual Go type using scope + struct fields."""
+        # 1. Check current scope variables (params + locals)
+        if var_name in self._current_scope_vars:
+            return self._current_scope_vars[var_name]
+        # 2. Check struct fields for method receiver access (e.g., h.svc in func (h *Handler))
+        if self._current_method_receiver and self._current_method_receiver in self._struct_fields:
+            fields = self._struct_fields[self._current_method_receiver]
+            if var_name in fields:
+                return fields[var_name]
+        return None
+
+    def _resolve_selector_chain_type(self, selector_node) -> Optional[str]:
+        """Resolve chained selector like h.svc to its final type for h.svc.DoWork()."""
+        parts = []
+        current = selector_node
+        while current and current.type == "selector_expression":
+            field = self._find_child_by_type(current, "field_identifier")
+            if field:
+                parts.insert(0, field.text.decode())
+                current = current.children[0]
+            else:
+                break
+        if not (current and current.type == "identifier"):
+            return None
+        root_var = current.text.decode()
+        current_type = self._resolve_receiver_type(root_var)
+        if not current_type:
+            return None
+        # Chain through struct fields: h -> Handler, .svc -> Service, etc.
+        for field_name in parts:
+            if current_type in self._struct_fields:
+                field_type = self._struct_fields[current_type].get(field_name)
+                if field_type:
+                    current_type = field_type
+                else:
+                    return None
+            else:
+                return None
+        return current_type
+
+    def _extract_receiver_var_name(self, method_node) -> Optional[str]:
+        """Extract the receiver variable name (e.g., 'h' from 'func (h *Handler)')."""
+        receiver_node = self._find_child_by_type(method_node, "parameter_list")
+        if not receiver_node:
+            return None
+        for child in receiver_node.children:
+            if child.type == "parameter_declaration":
+                for c in child.children:
+                    if c.type == "identifier":
+                        return c.text.decode()
+        return None
+
     def _extract_call_relationships(self, node, depth: int = 0):
         """Extract function call relationships."""
         if depth > 100:
             return
 
-        # Track current function context
+        # Track current function context and build variable type scope
         if node.type == "function_declaration":
             name_node = self._find_child_by_type(node, "identifier")
             if name_node:
                 self._current_function = name_node.text.decode()
                 self._current_method_receiver = None
+                self._current_receiver_var = None
+                self._build_function_scope(node)
 
         elif node.type == "method_declaration":
             name_node = self._find_child_by_type(node, "field_identifier")
             if name_node:
                 self._current_function = name_node.text.decode()
                 self._current_method_receiver = self._extract_method_receiver_type(node)
+                self._current_receiver_var = self._extract_receiver_var_name(node)
+                self._build_function_scope(node)
 
         # Handle call expressions
         if node.type == "call_expression":
@@ -306,6 +615,8 @@ class TreeSitterGoAnalyzer:
         if node.type in ("function_declaration", "method_declaration"):
             self._current_function = None
             self._current_method_receiver = None
+            self._current_receiver_var = None
+            self._current_scope_vars = {}
 
     def _process_call_expression(self, node):
         """Process a call expression and extract the callee."""
@@ -327,50 +638,58 @@ class TreeSitterGoAnalyzer:
         # Method call: receiver.Method() or pkg.Func()
         elif func_node.type == "selector_expression":
             operand = func_node.children[0] if func_node.children else None
-            field = func_node.children[1] if len(func_node.children) > 1 else None
+            field = self._find_child_by_type(func_node, "field_identifier")
 
-            if field and field.type == "field_identifier":
+            if field:
                 callee_name = field.text.decode()
 
             if operand and callee_name:
                 if operand.type == "identifier":
                     op_name = operand.text.decode()
-                    # Check if it's a package reference
                     if op_name in self._import_map:
-                        # This is pkg.Func() call
                         callee_name = f"{op_name}.{callee_name}"
                     else:
-                        # This is receiver.Method() call
-                        receiver_type = op_name
+                        # Resolve receiver variable to its actual type
+                        resolved = self._resolve_receiver_type(op_name)
+                        receiver_type = resolved if resolved else op_name
                 elif operand.type == "selector_expression":
-                    # Nested selector: a.b.Method()
-                    selector_name = self._get_full_selector_name(operand)
-                    if selector_name:
-                        callee_name = f"{selector_name}.{callee_name}"
+                    # Chained selector: a.b.Method() - resolve chain type
+                    resolved = self._resolve_selector_chain_type(operand)
+                    if resolved:
+                        receiver_type = resolved
+                    else:
+                        selector_name = self._get_full_selector_name(operand)
+                        if selector_name:
+                            callee_name = f"{selector_name}.{callee_name}"
 
         if not callee_name or self._is_builtin(callee_name):
             return
 
-        # Build caller ID
         caller_id = self._get_component_id(
             self._current_function,
             self._current_method_receiver
         )
 
-        # Build callee ID - try to resolve
+        # Build callee ID using type-resolved receiver
         callee_id = callee_name
+        is_resolved = False
         if receiver_type:
-            # Method call on a receiver
-            if f"{receiver_type}.{callee_name}" in self._top_level_nodes:
-                callee_id = self._get_component_id(callee_name, receiver_type)
+            short_key = f"{receiver_type}.{callee_name}"
+            if short_key in self._top_level_nodes:
+                callee_id = self._top_level_nodes[short_key].id
+                is_resolved = True
             else:
-                callee_id = f"{receiver_type}.{callee_name}"
+                callee_id = short_key
+        else:
+            if callee_name in self._top_level_nodes:
+                callee_id = self._top_level_nodes[callee_name].id
+                is_resolved = True
 
         self.call_relationships.append(CallRelationship(
             caller=caller_id,
             callee=callee_id,
             call_line=node.start_point[0] + 1,
-            is_resolved=callee_id in self._top_level_nodes
+            is_resolved=is_resolved
         ))
 
     def _process_struct_embedding(self, node):
@@ -437,10 +756,9 @@ class TreeSitterGoAnalyzer:
         parts = []
         current = node
         while current and current.type == "selector_expression":
-            if len(current.children) >= 2:
-                field = current.children[1]
-                if field.type == "field_identifier":
-                    parts.insert(0, field.text.decode())
+            field = self._find_child_by_type(current, "field_identifier")
+            if field:
+                parts.insert(0, field.text.decode())
                 current = current.children[0]
             else:
                 break

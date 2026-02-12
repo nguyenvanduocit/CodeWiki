@@ -86,6 +86,7 @@ async def agent_sdk_process_module(
     module_path: List[str],
     working_dir: str,
     config: Config,
+    module_tree: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """
     Replacement for AgentOrchestrator.process_module() using Claude Agent SDK.
@@ -173,13 +174,22 @@ async def agent_sdk_process_module(
 {component_list}
 </CORE_COMPONENTS>
 
+<GENERATED_ARTIFACTS>
+Pre-computed analysis artifacts are available in the output directory. Read them for deeper architectural context:
+- `codebase_map.json`: Dependency graph summary with per-component metrics (PageRank, betweenness, complexity, community IDs), circular dependencies, temporal couplings, and architectural violations
+- `graph.html`: Interactive D3.js visualization of the dependency graph with community clusters
+- `temp/dependency_graphs/`: Full dependency graph JSON with complete component data (source code, all metrics, dependency edges)
+- `module_tree.json`: Hierarchical module decomposition tree
+</GENERATED_ARTIFACTS>
+
 Instructions:
 1. Read the source files for the core components listed above
-2. Analyze the code structure, dependencies, and functionality
-3. Create `{module_name}.md` in the output directory with comprehensive documentation
-4. Include Mermaid diagrams for architecture, dependencies, and data flow
-5. All documentation files should be saved in: {os.path.abspath(working_dir)}
-6. Reference other modules by linking to `[module_name](module_name.md)` — all docs are in the same flat directory
+2. Read `codebase_map.json` in the output directory to understand architectural metrics and dependencies
+3. Analyze the code structure, dependencies, and functionality
+4. Create `{module_name}.md` in the output directory with comprehensive documentation
+5. Include Mermaid diagrams for architecture, dependencies, and data flow
+6. All documentation files should be saved in: {os.path.abspath(working_dir)}
+7. Reference other modules by linking to `[module_name](module_name.md)` — all docs are in the same flat directory
 """
 
     logger.info(f"Agent SDK processing module: {module_name}")

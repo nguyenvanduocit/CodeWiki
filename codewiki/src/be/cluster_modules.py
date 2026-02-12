@@ -72,7 +72,7 @@ def cluster_modules(
     potential_core_components, potential_core_components_with_code = format_potential_core_components(leaf_nodes, components)
 
     if count_tokens(potential_core_components_with_code) <= config.max_token_per_module:
-        logger.debug(f"Skipping clustering for {current_module_name} because the potential core components are too few: {count_tokens(potential_core_components_with_code)} tokens")
+        logger.info(f"Skipping clustering for {current_module_name}: token count ({count_tokens(potential_core_components_with_code)}) <= max_token_per_module ({config.max_token_per_module})")
         return {}
 
     prompt = format_cluster_prompt(potential_core_components, current_module_tree, current_module_name)
@@ -81,7 +81,7 @@ def cluster_modules(
     #parse the response
     try:
         if "<GROUPED_COMPONENTS>" not in response or "</GROUPED_COMPONENTS>" not in response:
-            logger.error(f"Invalid LLM response format - missing component tags: {response[:200]}...")
+            logger.warning(f"LLM response missing GROUPED_COMPONENTS tags, clustering failed for {current_module_name}: {response[:200]}...")
             return {}
         
         response_content = response.split("<GROUPED_COMPONENTS>")[1].split("</GROUPED_COMPONENTS>")[0]
@@ -98,7 +98,7 @@ def cluster_modules(
 
     # check if the module tree is valid
     if len(module_tree) <= 1:
-        logger.debug(f"Skipping clustering for {current_module_name} because the module tree is too small: {len(module_tree)} modules")
+        logger.info(f"Skipping clustering for {current_module_name}: module tree has only {len(module_tree)} module(s), needs at least 2")
         return {}
 
     if not current_module_tree:

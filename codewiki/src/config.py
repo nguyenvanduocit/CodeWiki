@@ -9,7 +9,7 @@ load_dotenv()
 OUTPUT_BASE_DIR = 'output'
 DEPENDENCY_GRAPHS_DIR = 'dependency_graphs'
 DOCS_DIR = 'docs'
-FIRST_MODULE_TREE_FILENAME = 'first_module_tree.json'
+INITIAL_MODULE_TREE_FILENAME = 'initial_module_tree.json'
 MODULE_TREE_FILENAME = 'module_tree.json'
 OVERVIEW_FILENAME = 'overview.md'
 MAX_DEPTH = 2
@@ -62,6 +62,7 @@ class Config:
     # Backend selection
     use_agent_sdk: bool = False
     no_cache: bool = False
+    analysis_only: bool = False
 
     @property
     def include_patterns(self) -> Optional[List[str]]:
@@ -160,7 +161,8 @@ class Config:
         max_depth: int = MAX_DEPTH,
         agent_instructions: Optional[Dict[str, Any]] = None,
         use_agent_sdk: bool = False,
-        no_cache: bool = False
+        no_cache: bool = False,
+        analysis_only: bool = False
     ) -> 'Config':
         """
         Create configuration for CLI context.
@@ -201,5 +203,6 @@ class Config:
             max_token_per_leaf_module=max_token_per_leaf_module,
             agent_instructions=agent_instructions,
             use_agent_sdk=use_agent_sdk,
-            no_cache=no_cache
+            no_cache=no_cache,
+            analysis_only=analysis_only
         )

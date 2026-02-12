@@ -48,6 +48,13 @@ class Node(BaseModel):
     community_id: int = -1
     tfidf_keywords: List[tuple] = []
     complexity_score: float = 0.0
+    betweenness_centrality: float = 0.0
+    cyclomatic_complexity: int = 0
+    cognitive_complexity: int = 0
+    nloc: int = 0
+    token_count: int = 0
+    parameter_count: int = 0
+    maintainability_index: float = 100.0
 
     def get_display_name(self) -> str:
         return self.display_name or self.name

@@ -131,6 +131,11 @@ def parse_patterns(patterns_str: str) -> List[str]:
     is_flag=True,
     help="Use Claude Agent SDK as the LLM backend instead of direct API calls",
 )
+@click.option(
+    "--analysis-only",
+    is_flag=True,
+    help="Run only static analysis (dependency graph, metrics, codebase map) without LLM calls",
+)
 @click.pass_context
 def generate_command(
     ctx,
@@ -149,6 +154,7 @@ def generate_command(
     max_token_per_leaf_module: Optional[int],
     max_depth: Optional[int],
     use_agent_sdk: bool,
+    analysis_only: bool,
 ):
     """
     Generate comprehensive documentation for a code repository.
@@ -210,24 +216,31 @@ def generate_command(
         
         # Load configuration
         config_manager = ConfigManager()
-        if not config_manager.load():
-            raise ConfigurationError(
-                "Configuration not found or invalid.\n\n"
-                "Please run 'codewiki config set' to configure your LLM API credentials:\n"
-                "  codewiki config set --api-key <your-api-key> --base-url <api-url> \\\n"
-                "    --main-model <model> --cluster-model <model>\n\n"
-                "For more help: codewiki config --help"
-            )
-        
-        if not config_manager.is_configured():
-            raise ConfigurationError(
-                "Configuration is incomplete. Please run 'codewiki config validate'"
-            )
-        
-        config = config_manager.get_config()
-        api_key = config_manager.get_api_key()
-        
-        logger.success("Configuration valid")
+        if analysis_only:
+            # No API key needed for static analysis
+            config_manager.load()
+            config = config_manager.get_config() if config_manager.is_configured() else None
+            api_key = None
+            logger.success("Analysis-only mode (no LLM required)")
+        else:
+            if not config_manager.load():
+                raise ConfigurationError(
+                    "Configuration not found or invalid.\n\n"
+                    "Please run 'codewiki config set' to configure your LLM API credentials:\n"
+                    "  codewiki config set --api-key <your-api-key> --base-url <api-url> \\\n"
+                    "    --main-model <model> --cluster-model <model>\n\n"
+                    "For more help: codewiki config --help"
+                )
+
+            if not config_manager.is_configured():
+                raise ConfigurationError(
+                    "Configuration is incomplete. Please run 'codewiki config validate'"
+                )
+
+            config = config_manager.get_config()
+            api_key = config_manager.get_api_key()
+
+            logger.success("Configuration valid")
         
         # Validate repository
         logger.step("Validating repository...", 2, 4)
@@ -327,7 +340,7 @@ def generate_command(
                     logger.debug(f"Custom instructions: {instructions}")
         
         # Log max token settings if verbose
-        if verbose:
+        if verbose and config:
             effective_max_tokens = max_tokens if max_tokens is not None else config.max_tokens
             effective_max_token_per_module = max_token_per_module if max_token_per_module is not None else config.max_token_per_module
             effective_max_token_per_leaf = max_token_per_leaf_module if max_token_per_leaf_module is not None else config.max_token_per_leaf_module
@@ -336,43 +349,44 @@ def generate_command(
             logger.debug(f"Max token/module: {effective_max_token_per_module}")
             logger.debug(f"Max token/leaf module: {effective_max_token_per_leaf}")
             logger.debug(f"Max depth: {effective_max_depth}")
-        
+
         # Get agent instructions (merge runtime with persistent)
         agent_instructions_dict = None
         if runtime_instructions and not runtime_instructions.is_empty():
             # Merge with persistent settings
             merged = AgentInstructions(
-                include_patterns=runtime_instructions.include_patterns or (config.agent_instructions.include_patterns if config.agent_instructions else None),
-                exclude_patterns=runtime_instructions.exclude_patterns or (config.agent_instructions.exclude_patterns if config.agent_instructions else None),
-                focus_modules=runtime_instructions.focus_modules or (config.agent_instructions.focus_modules if config.agent_instructions else None),
-                doc_type=runtime_instructions.doc_type or (config.agent_instructions.doc_type if config.agent_instructions else None),
-                custom_instructions=runtime_instructions.custom_instructions or (config.agent_instructions.custom_instructions if config.agent_instructions else None),
+                include_patterns=runtime_instructions.include_patterns or (config.agent_instructions.include_patterns if config and config.agent_instructions else None),
+                exclude_patterns=runtime_instructions.exclude_patterns or (config.agent_instructions.exclude_patterns if config and config.agent_instructions else None),
+                focus_modules=runtime_instructions.focus_modules or (config.agent_instructions.focus_modules if config and config.agent_instructions else None),
+                doc_type=runtime_instructions.doc_type or (config.agent_instructions.doc_type if config and config.agent_instructions else None),
+                custom_instructions=runtime_instructions.custom_instructions or (config.agent_instructions.custom_instructions if config and config.agent_instructions else None),
             )
             agent_instructions_dict = merged.to_dict()
-        elif config.agent_instructions and not config.agent_instructions.is_empty():
+        elif config and config.agent_instructions and not config.agent_instructions.is_empty():
             agent_instructions_dict = config.agent_instructions.to_dict()
-        
+
         # Create generator
         generator = CLIDocumentationGenerator(
             repo_path=repo_path,
             output_dir=output_dir,
             config={
-                'main_model': config.main_model,
-                'cluster_model': config.cluster_model,
-                'fallback_model': config.fallback_model,
-                'base_url': config.base_url,
+                'main_model': config.main_model if config else '',
+                'cluster_model': config.cluster_model if config else '',
+                'fallback_model': config.fallback_model if config else '',
+                'base_url': config.base_url if config else '',
                 'api_key': api_key,
                 'agent_instructions': agent_instructions_dict,
                 # Max token settings (runtime overrides take precedence)
-                'max_tokens': max_tokens if max_tokens is not None else config.max_tokens,
-                'max_token_per_module': max_token_per_module if max_token_per_module is not None else config.max_token_per_module,
-                'max_token_per_leaf_module': max_token_per_leaf_module if max_token_per_leaf_module is not None else config.max_token_per_leaf_module,
+                'max_tokens': max_tokens or (config.max_tokens if config else 32768),
+                'max_token_per_module': max_token_per_module or (config.max_token_per_module if config else 36369),
+                'max_token_per_leaf_module': max_token_per_leaf_module or (config.max_token_per_leaf_module if config else 16000),
                 # Max depth setting (runtime override takes precedence)
-                'max_depth': max_depth if max_depth is not None else config.max_depth,
+                'max_depth': max_depth or (config.max_depth if config else 2),
                 'use_agent_sdk': use_agent_sdk,
+                'analysis_only': analysis_only,
             },
             verbose=verbose,
-            generate_html=github_pages
+            generate_html=github_pages and not analysis_only
         )
         
         # Run generation

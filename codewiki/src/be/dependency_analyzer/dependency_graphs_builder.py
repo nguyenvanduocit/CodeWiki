@@ -2,7 +2,7 @@ from typing import Dict, List, Any
 import os
 from codewiki.src.config import Config
 from codewiki.src.be.dependency_analyzer.ast_parser import DependencyParser
-from codewiki.src.be.dependency_analyzer.topo_sort import build_graph_from_components, get_leaf_nodes, _get_valid_leaf_types
+from codewiki.src.be.dependency_analyzer.topo_sort import build_graph_from_components, get_leaf_nodes
 from codewiki.src.utils import file_manager
 import networkx as nx
 from codewiki.src.be.graph_metrics import compute_graph_metrics
@@ -19,13 +19,14 @@ class DependencyGraphBuilder:
     def __init__(self, config: Config):
         self.config = config
         self.graph = None
+        self.temporal_couplings = []
     
-    def build_dependency_graph(self) -> tuple[Dict[str, Any], List[str], Any]:
+    def build_dependency_graph(self) -> tuple[Dict[str, Any], List[str]]:
         """
         Build and save dependency graph, returning components and leaf nodes.
-        
+
         Returns:
-            Tuple of (components, leaf_nodes, graph)
+            Tuple of (components, leaf_nodes)
         """
         # Ensure output directory exists
         file_manager.ensure_directory(self.config.dependency_graph_dir)
@@ -50,10 +51,7 @@ class DependencyGraphBuilder:
 
         # Parse repository
         components = parser.parse_repository(filtered_folders)
-        
-        # Save dependency graph
-        parser.save_dependency_graph(dependency_graph_path)
-        
+
         # Build graph for traversal
         graph = build_graph_from_components(components)
         self.graph = graph
@@ -70,21 +68,14 @@ class DependencyGraphBuilder:
         compute_tfidf_keywords(components)
         compute_complexity_scores(components)
 
+        # Compute temporal coupling from git history
+        from codewiki.src.be.temporal_coupling import compute_temporal_coupling
+        self.temporal_couplings = compute_temporal_coupling(self.config.repo_path, components)
+
+        # Save dependency graph AFTER all metrics are computed
+        parser.save_dependency_graph(dependency_graph_path)
+
         # Get leaf nodes
         leaf_nodes = get_leaf_nodes(graph, components)
 
-        valid_types = _get_valid_leaf_types(components)
-
-        keep_leaf_nodes = []
-        for leaf_node in leaf_nodes:
-            if not isinstance(leaf_node, str) or leaf_node.strip() == "":
-                logger.warning(f"Skipping invalid leaf node identifier: '{leaf_node}'")
-                continue
-
-            if leaf_node in components:
-                if components[leaf_node].component_type in valid_types:
-                    keep_leaf_nodes.append(leaf_node)
-            else:
-                logger.warning(f"Leaf node {leaf_node} not found in components, removing it")
-
-        return components, keep_leaf_nodes, graph
+        return components, leaf_nodes

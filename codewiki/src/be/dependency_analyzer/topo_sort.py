@@ -337,7 +337,7 @@ def get_leaf_nodes(graph: Dict[str, Set[str]], components: Dict[str, Node]) -> L
 
     concise_leaf_nodes = filter_valid_leaf_nodes(leaf_nodes)
     if len(concise_leaf_nodes) >= 400 and not has_go_components:
-        logger.debug(f"Leaf nodes are too many ({len(concise_leaf_nodes)}), removing dependencies of other nodes")
+        logger.warning(f"Large repository: {len(concise_leaf_nodes)} leaf nodes, pruning nodes that are dependencies of others")
         # Remove nodes that are dependencies of other nodes
         for node, deps in acyclic_graph.items():
             for dep in deps:

@@ -26,11 +26,11 @@ from codewiki.src.config import Config as BackendConfig, set_cli_context
 class CLIDocumentationGenerator:
     """
     CLI adapter for documentation generation with progress reporting.
-    
+
     This class wraps the backend documentation generator and adds
     CLI-specific features like progress tracking and error handling.
     """
-    
+
     def __init__(
         self,
         repo_path: Path,
@@ -39,16 +39,6 @@ class CLIDocumentationGenerator:
         verbose: bool = False,
         generate_html: bool = False
     ):
-        """
-        Initialize the CLI documentation generator.
-        
-        Args:
-            repo_path: Repository path
-            output_dir: Output directory
-            config: LLM configuration
-            verbose: Enable verbose output
-            generate_html: Whether to generate HTML viewer
-        """
         self.repo_path = repo_path
         self.output_dir = output_dir
         self.config = config
@@ -56,7 +46,7 @@ class CLIDocumentationGenerator:
         self.generate_html = generate_html
         self.progress_tracker = ProgressTracker(total_stages=5, verbose=verbose)
         self.job = DocumentationJob()
-        
+
         # Setup job metadata
         self.job.repository_path = str(repo_path)
         self.job.repository_name = repo_path.name
@@ -66,69 +56,49 @@ class CLIDocumentationGenerator:
             cluster_model=config.get('cluster_model', ''),
             base_url=config.get('base_url', '')
         )
-        
-        # Configure backend logging
+
         self._configure_backend_logging()
-    
+
     def _configure_backend_logging(self):
         """Configure backend logger for CLI use with colored output."""
         from codewiki.src.be.dependency_analyzer.utils.logging_config import ColoredFormatter
-        
-        # Get backend logger (parent of all backend modules)
+
         backend_logger = logging.getLogger('codewiki.src.be')
-        
-        # Remove existing handlers to avoid duplicates
         backend_logger.handlers.clear()
-        
+
         if self.verbose:
-            # In verbose mode, show DEBUG and above
             backend_logger.setLevel(logging.DEBUG)
-            
-            # Create console handler with formatting
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setLevel(logging.DEBUG)
-            
-            # Use colored formatter for better readability
             colored_formatter = ColoredFormatter()
             console_handler.setFormatter(colored_formatter)
-            
-            # Add handler to logger
             backend_logger.addHandler(console_handler)
         else:
-            # In non-verbose mode, suppress backend logs (use WARNING level to hide INFO/DEBUG)
             backend_logger.setLevel(logging.WARNING)
-            
-            # Create console handler for warnings and errors only
             console_handler = logging.StreamHandler(sys.stderr)
             console_handler.setLevel(logging.WARNING)
-            
-            # Use colored formatter even for warnings/errors
             colored_formatter = ColoredFormatter()
             console_handler.setFormatter(colored_formatter)
-            
             backend_logger.addHandler(console_handler)
-        
-        # Prevent propagation to root logger to avoid duplicate messages
+
         backend_logger.propagate = False
-    
+
     def generate(self) -> DocumentationJob:
         """
         Generate documentation with progress tracking.
-        
+
         Returns:
             Completed DocumentationJob
-            
+
         Raises:
             APIError: If LLM API call fails
         """
         self.job.start()
         start_time = time.time()
-        
+
         try:
-            # Set CLI context for backend
             set_cli_context(True)
-            
-            # Create backend config with CLI settings
+
             backend_config = BackendConfig.from_cli(
                 repo_path=str(self.repo_path),
                 output_dir=str(self.output_dir),
@@ -143,178 +113,88 @@ class CLIDocumentationGenerator:
                 max_depth=self.config.get('max_depth', 2),
                 agent_instructions=self.config.get('agent_instructions'),
                 use_agent_sdk=self.config.get('use_agent_sdk', False),
-                no_cache=self.config.get('no_cache', False)
+                no_cache=self.config.get('no_cache', False),
+                analysis_only=self.config.get('analysis_only', False)
             )
-            
-            # Run backend documentation generation
+
             asyncio.run(self._run_backend_generation(backend_config))
-            
+
             # Stage 4: HTML Generation (optional)
             if self.generate_html:
                 self._run_html_generation()
-            
+
             # Stage 5: Finalization (metadata already created by backend)
             self._finalize_job()
-            
-            # Complete job
+
             generation_time = time.time() - start_time
             self.job.complete()
-            
+
             return self.job
-            
+
         except Exception as e:
             self.job.fail(str(e))
             raise
-    
+
     async def _run_backend_generation(self, backend_config: BackendConfig):
-        """Run the backend documentation generation with progress tracking."""
-        
-        # Stage 1: Dependency Analysis
-        self.progress_tracker.start_stage(1, "Dependency Analysis")
-        if self.verbose:
-            self.progress_tracker.update_stage(0.2, "Initializing dependency analyzer...")
-        
-        # Create documentation generator
+        """Run backend generation with progress tracking."""
         doc_generator = DocumentationGenerator(backend_config)
-        
-        if self.verbose:
-            self.progress_tracker.update_stage(0.5, "Parsing source files...")
-        
-        # Build dependency graph
-        try:
-            components, leaf_nodes, graph = doc_generator.graph_builder.build_dependency_graph()
-            self.job.statistics.total_files_analyzed = len(components)
-            self.job.statistics.leaf_nodes = len(leaf_nodes)
 
+        def on_progress(stage, stage_name, progress, message):
+            if progress <= 0.01:
+                self.progress_tracker.start_stage(stage, stage_name)
             if self.verbose:
-                self.progress_tracker.update_stage(1.0, f"Found {len(leaf_nodes)} leaf nodes")
-        except Exception as e:
-            raise APIError(f"Dependency analysis failed: {e}")
-
-        self.progress_tracker.complete_stage()
-
-        from codewiki.src.be.cluster_modules import cluster_modules
-        from codewiki.src.utils import file_manager
-        from codewiki.src.config import FIRST_MODULE_TREE_FILENAME, MODULE_TREE_FILENAME
-
-        working_dir = str(self.output_dir.absolute())
-        file_manager.ensure_directory(working_dir)
-
-        # Generate codebase_map.json and graph viewer
-        circular_deps = doc_generator.graph_builder.circular_deps
-        doc_generator._generate_codebase_map(components, graph, working_dir, circular_deps=circular_deps)
-
-        from codewiki.src.be.graph_viewer_generator import generate_graph_viewer
-        generate_graph_viewer(working_dir)
-
-        # Stage 2: Module Clustering (needs FULL components before cache filtering)
-        self.progress_tracker.start_stage(2, "Module Clustering")
-
-        first_module_tree_path = os.path.join(working_dir, FIRST_MODULE_TREE_FILENAME)
-        module_tree_path = os.path.join(working_dir, MODULE_TREE_FILENAME)
+                self.progress_tracker.update_stage(progress, message)
+            if progress >= 1.0:
+                self.progress_tracker.complete_stage()
+                # Capture statistics from stage 1
+                if stage == 1 and hasattr(doc_generator, 'graph_builder'):
+                    builder = doc_generator.graph_builder
+                    if hasattr(builder, '_last_components_count'):
+                        self.job.statistics.total_files_analyzed = builder._last_components_count
 
         try:
-            if os.path.exists(first_module_tree_path):
-                module_tree = file_manager.load_json(first_module_tree_path)
-            else:
-                if self.config.get('use_agent_sdk'):
-                    if self.verbose:
-                        self.progress_tracker.update_stage(0.5, "Clustering modules with Agent SDK...")
-                    from codewiki.src.be.claude_agent_sdk_adapter import agent_sdk_cluster
-                    module_tree = await agent_sdk_cluster(leaf_nodes, components, backend_config)
-                else:
-                    if self.verbose:
-                        self.progress_tracker.update_stage(0.5, "Clustering modules with LLM...")
-                    module_tree = cluster_modules(leaf_nodes, components, backend_config)
-                file_manager.save_json(module_tree, first_module_tree_path)
-
-            file_manager.save_json(module_tree, module_tree_path)
-            self.job.module_count = len(module_tree)
-
-            if self.verbose:
-                self.progress_tracker.update_stage(1.0, f"Created {len(module_tree)} modules")
-        except Exception as e:
-            raise APIError(f"Module clustering failed: {e}")
-
-        self.progress_tracker.complete_stage()
-
-        # Content-hash caching: skip unchanged components
-        cache = None
-        if not backend_config.no_cache:
-            from codewiki.src.be.content_cache import get_changed_components, save_cache
-            components, cache = get_changed_components(components, working_dir)
-            leaf_nodes = [ln for ln in leaf_nodes if ln in components]
-            if not components:
-                if self.verbose:
-                    self.progress_tracker.update_stage(1.0, "All components unchanged (cache hit)")
-                return
-
-        # Stage 3: Documentation Generation
-        self.progress_tracker.start_stage(3, "Documentation Generation")
-        if self.verbose:
-            self.progress_tracker.update_stage(0.1, "Generating module documentation...")
-
-        try:
-            # Run the actual documentation generation
-            await doc_generator.generate_module_documentation(components, leaf_nodes)
-
-            if self.verbose:
-                self.progress_tracker.update_stage(0.9, "Creating repository overview...")
-
-            # Create metadata
-            doc_generator.create_documentation_metadata(working_dir, components, len(leaf_nodes))
-
-            # Save content cache after successful generation
-            if cache is not None:
-                from codewiki.src.be.content_cache import save_cache
-                save_cache(working_dir, cache)
-
-            # Collect generated files
-            for file_path in os.listdir(working_dir):
-                if file_path.endswith('.md') or file_path.endswith('.json') or file_path.endswith('.html'):
-                    self.job.files_generated.append(file_path)
-
+            await doc_generator.run(on_progress=on_progress)
         except Exception as e:
             raise APIError(f"Documentation generation failed: {e}")
 
-        self.progress_tracker.complete_stage()
-    
+        # Collect generated files
+        working_dir = str(self.output_dir.absolute())
+        for file_path in os.listdir(working_dir):
+            if file_path.endswith(('.md', '.json', '.html')):
+                self.job.files_generated.append(file_path)
+
     def _run_html_generation(self):
         """Run HTML generation stage."""
         self.progress_tracker.start_stage(4, "HTML Generation")
-        
+
         from codewiki.cli.html_generator import HTMLGenerator
-        
-        # Generate HTML
+
         html_generator = HTMLGenerator()
-        
+
         if self.verbose:
             self.progress_tracker.update_stage(0.3, "Loading module tree and metadata...")
-        
+
         repo_info = html_generator.detect_repository_info(self.repo_path)
-        
-        # Generate HTML with auto-loading of module_tree and metadata from docs_dir
+
         output_path = self.output_dir / "index.html"
         html_generator.generate(
             output_path=output_path,
             title=repo_info['name'],
             repository_url=repo_info['url'],
             github_pages_url=repo_info['github_pages_url'],
-            docs_dir=self.output_dir  # Auto-load module_tree and metadata from here
+            docs_dir=self.output_dir
         )
-        
+
         self.job.files_generated.append("index.html")
-        
+
         if self.verbose:
             self.progress_tracker.update_stage(1.0, "Generated index.html")
-        
+
         self.progress_tracker.complete_stage()
-    
+
     def _finalize_job(self):
         """Finalize the job (metadata already created by backend)."""
-        # Just verify metadata exists
         metadata_path = self.output_dir / "metadata.json"
         if not metadata_path.exists():
-            # Create our own if backend didn't
             with open(metadata_path, 'w') as f:
                 f.write(self.job.to_json())

@@ -60,14 +60,13 @@ class AgentOrchestrator:
                 system_prompt=format_leaf_system_prompt(module_name, self.custom_instructions),
             )
     
-    async def process_module(self, module_name: str, components: Dict[str, Node], 
-                           core_component_ids: List[str], module_path: List[str], working_dir: str) -> Dict[str, Any]:
+    async def process_module(self, module_name: str, components: Dict[str, Node],
+                           core_component_ids: List[str], module_path: List[str],
+                           working_dir: str, module_tree: Dict[str, Any]) -> Dict[str, Any]:
         """Process a single module and generate its documentation."""
         logger.info(f"Processing module: {module_name}")
-        
-        # Load or create module tree
+
         module_tree_path = os.path.join(working_dir, MODULE_TREE_FILENAME)
-        module_tree = file_manager.load_json(module_tree_path)
         
         # Create agent
         agent = self.create_agent(module_name, components, core_component_ids)
@@ -87,17 +86,18 @@ class AgentOrchestrator:
             custom_instructions=self.custom_instructions
         )
 
-        # check if overview docs already exists
-        overview_docs_path = os.path.join(working_dir, OVERVIEW_FILENAME)
-        if os.path.exists(overview_docs_path):
-            logger.info(f"✓ Overview docs already exists at {overview_docs_path}")
-            return module_tree
+        if not self.config.no_cache:
+            # check if overview docs already exists
+            overview_docs_path = os.path.join(working_dir, OVERVIEW_FILENAME)
+            if os.path.exists(overview_docs_path):
+                logger.info(f"✓ Overview docs already exists at {overview_docs_path}")
+                return module_tree
 
-        # check if module docs already exists
-        docs_path = os.path.join(working_dir, f"{module_name}.md")
-        if os.path.exists(docs_path):
-            logger.info(f"✓ Module docs already exists at {docs_path}")
-            return module_tree
+            # check if module docs already exists
+            docs_path = os.path.join(working_dir, f"{module_name}.md")
+            if os.path.exists(docs_path):
+                logger.info(f"✓ Module docs already exists at {docs_path}")
+                return module_tree
         
         # Run agent
         try:
