@@ -182,27 +182,34 @@ class CLIDocumentationGenerator:
         
         # Build dependency graph
         try:
-            components, leaf_nodes, _graph = doc_generator.graph_builder.build_dependency_graph()
+            components, leaf_nodes, graph = doc_generator.graph_builder.build_dependency_graph()
             self.job.statistics.total_files_analyzed = len(components)
             self.job.statistics.leaf_nodes = len(leaf_nodes)
-            
+
             if self.verbose:
                 self.progress_tracker.update_stage(1.0, f"Found {len(leaf_nodes)} leaf nodes")
         except Exception as e:
             raise APIError(f"Dependency analysis failed: {e}")
-        
-        self.progress_tracker.complete_stage()
-        
-        # Stage 2: Module Clustering
-        self.progress_tracker.start_stage(2, "Module Clustering")
 
-        # Import clustering function
+        self.progress_tracker.complete_stage()
+
         from codewiki.src.be.cluster_modules import cluster_modules
         from codewiki.src.utils import file_manager
         from codewiki.src.config import FIRST_MODULE_TREE_FILENAME, MODULE_TREE_FILENAME
 
         working_dir = str(self.output_dir.absolute())
         file_manager.ensure_directory(working_dir)
+
+        # Generate codebase_map.json and graph viewer
+        circular_deps = doc_generator.graph_builder.circular_deps
+        doc_generator._generate_codebase_map(components, graph, working_dir, circular_deps=circular_deps)
+
+        from codewiki.src.be.graph_viewer_generator import generate_graph_viewer
+        generate_graph_viewer(working_dir)
+
+        # Stage 2: Module Clustering (needs FULL components before cache filtering)
+        self.progress_tracker.start_stage(2, "Module Clustering")
+
         first_module_tree_path = os.path.join(working_dir, FIRST_MODULE_TREE_FILENAME)
         module_tree_path = os.path.join(working_dir, MODULE_TREE_FILENAME)
 
@@ -220,40 +227,56 @@ class CLIDocumentationGenerator:
                         self.progress_tracker.update_stage(0.5, "Clustering modules with LLM...")
                     module_tree = cluster_modules(leaf_nodes, components, backend_config)
                 file_manager.save_json(module_tree, first_module_tree_path)
-            
+
             file_manager.save_json(module_tree, module_tree_path)
             self.job.module_count = len(module_tree)
-            
+
             if self.verbose:
                 self.progress_tracker.update_stage(1.0, f"Created {len(module_tree)} modules")
         except Exception as e:
             raise APIError(f"Module clustering failed: {e}")
-        
+
         self.progress_tracker.complete_stage()
-        
+
+        # Content-hash caching: skip unchanged components
+        cache = None
+        if not backend_config.no_cache:
+            from codewiki.src.be.content_cache import get_changed_components, save_cache
+            components, cache = get_changed_components(components, working_dir)
+            leaf_nodes = [ln for ln in leaf_nodes if ln in components]
+            if not components:
+                if self.verbose:
+                    self.progress_tracker.update_stage(1.0, "All components unchanged (cache hit)")
+                return
+
         # Stage 3: Documentation Generation
         self.progress_tracker.start_stage(3, "Documentation Generation")
         if self.verbose:
             self.progress_tracker.update_stage(0.1, "Generating module documentation...")
-        
+
         try:
             # Run the actual documentation generation
             await doc_generator.generate_module_documentation(components, leaf_nodes)
-            
+
             if self.verbose:
                 self.progress_tracker.update_stage(0.9, "Creating repository overview...")
-            
+
             # Create metadata
             doc_generator.create_documentation_metadata(working_dir, components, len(leaf_nodes))
-            
+
+            # Save content cache after successful generation
+            if cache is not None:
+                from codewiki.src.be.content_cache import save_cache
+                save_cache(working_dir, cache)
+
             # Collect generated files
             for file_path in os.listdir(working_dir):
-                if file_path.endswith('.md') or file_path.endswith('.json'):
+                if file_path.endswith('.md') or file_path.endswith('.json') or file_path.endswith('.html'):
                     self.job.files_generated.append(file_path)
-            
+
         except Exception as e:
             raise APIError(f"Documentation generation failed: {e}")
-        
+
         self.progress_tracker.complete_stage()
     
     def _run_html_generation(self):
