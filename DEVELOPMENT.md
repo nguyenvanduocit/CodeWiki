@@ -73,9 +73,9 @@ pip install -r requirements.txt
 
 #### 1. Dependency Analysis (`src/be/dependency_analyzer/`)
 
-- **AST Parser**: Tree-sitter based parsing for 7 languages
+- **AST Parser**: Tree-sitter based parsing for 8 languages
 - **Dependency Graph Builder**: Constructs call graphs and dependency relationships
-- **Analyzers**: Language-specific analyzers (Python, Java, JavaScript, TypeScript, C, C++, C#)
+- **Analyzers**: Language-specific analyzers (Python, Java, JavaScript, TypeScript, C, C++, C#, Go)
 
 #### 2. Module Clustering (`src/be/cluster_modules.py`)
 
