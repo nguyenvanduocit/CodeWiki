@@ -57,48 +57,58 @@ class TreeSitterTSAnalyzer:
         except Exception as e:
             logger.error(f"Error analyzing TypeScript file {self.file_path}: {e}", exc_info=True)
 
-    def _extract_all_entities(self, node, all_entities: dict, depth=0) -> None:
-        entity = None
-        entity_name = None
-        
-        if node.type == "function_declaration":
-            entity = self._extract_function_entity(node, "function", depth)
-        elif node.type == "generator_function_declaration":
-            entity = self._extract_function_entity(node, "generator_function", depth)
-        elif node.type == "arrow_function":
-            entity = self._extract_arrow_function_entity(node, depth)
-        elif node.type == "method_definition":
-            entity = self._extract_method_entity(node, depth)
-        elif node.type == "class_declaration":
-            entity = self._extract_class_entity(node, "class", depth)
-        elif node.type == "abstract_class_declaration":
-            entity = self._extract_class_entity(node, "abstract_class", depth)
-        elif node.type == "interface_declaration":
-            entity = self._extract_interface_entity(node, depth)
-        elif node.type == "type_alias_declaration":
-            entity = self._extract_type_alias_entity(node, depth)
-        elif node.type == "enum_declaration":
-            entity = self._extract_enum_entity(node, depth)
-        elif node.type == "variable_declarator":
-            entity = self._extract_variable_entity(node, depth)
-        elif node.type == "export_statement":
-            entity = self._extract_export_statement_entity(node, depth)
-        elif node.type == "lexical_declaration":
-            entity = self._extract_lexical_declaration_entity(node, depth)
-        elif node.type == "variable_declaration":
-            entity = self._extract_variable_declaration_entity(node, depth)
-        elif node.type == "ambient_declaration":
-            entity = self._extract_ambient_declaration_entity(node, depth)
-        
-        if entity and entity.get('name'):
-            entity_name = entity['name']
-            entity['depth'] = depth  
-            entity['node'] = node   
-            entity['parent_context'] = self._get_parent_context(node)  
-            all_entities[entity_name] = entity
-        
-        for child in node.children:
-            self._extract_all_entities(child, all_entities, depth + 1)
+    def _extract_all_entities(self, root_node, all_entities: dict, max_depth: int = 500) -> None:
+        """Extract all entities using iterative traversal to avoid recursion limit."""
+        stack = [(root_node, 0)]
+
+        while stack:
+            node, depth = stack.pop()
+
+            if depth > max_depth:
+                logger.warning(f"Max depth {max_depth} reached, skipping deeper nodes")
+                continue
+
+            entity = None
+            entity_name = None
+
+            if node.type == "function_declaration":
+                entity = self._extract_function_entity(node, "function", depth)
+            elif node.type == "generator_function_declaration":
+                entity = self._extract_function_entity(node, "generator_function", depth)
+            elif node.type == "arrow_function":
+                entity = self._extract_arrow_function_entity(node, depth)
+            elif node.type == "method_definition":
+                entity = self._extract_method_entity(node, depth)
+            elif node.type == "class_declaration":
+                entity = self._extract_class_entity(node, "class", depth)
+            elif node.type == "abstract_class_declaration":
+                entity = self._extract_class_entity(node, "abstract_class", depth)
+            elif node.type == "interface_declaration":
+                entity = self._extract_interface_entity(node, depth)
+            elif node.type == "type_alias_declaration":
+                entity = self._extract_type_alias_entity(node, depth)
+            elif node.type == "enum_declaration":
+                entity = self._extract_enum_entity(node, depth)
+            elif node.type == "variable_declarator":
+                entity = self._extract_variable_entity(node, depth)
+            elif node.type == "export_statement":
+                entity = self._extract_export_statement_entity(node, depth)
+            elif node.type == "lexical_declaration":
+                entity = self._extract_lexical_declaration_entity(node, depth)
+            elif node.type == "variable_declaration":
+                entity = self._extract_variable_declaration_entity(node, depth)
+            elif node.type == "ambient_declaration":
+                entity = self._extract_ambient_declaration_entity(node, depth)
+
+            if entity and entity.get('name'):
+                entity_name = entity['name']
+                entity['depth'] = depth
+                entity['node'] = node
+                entity['parent_context'] = self._get_parent_context(node)
+                all_entities[entity_name] = entity
+
+            for child in reversed(node.children):
+                stack.append((child, depth + 1))
     
     def _filter_top_level_declarations(self, all_entities: dict) -> None:
         for entity_name, entity_data in all_entities.items():
@@ -683,39 +693,44 @@ class TreeSitterTSAnalyzer:
                             parameters.append(self._get_node_text(param_name))
         return parameters
 
-    def _extract_all_relationships(self, node, all_entities: dict) -> None:
-        self._traverse_for_relationships(node, all_entities, current_top_level=None)
+    def _extract_all_relationships(self, root_node, all_entities: dict, max_depth: int = 500) -> None:
+        """Extract relationships using iterative traversal to avoid recursion limit."""
+        stack = [(root_node, None, 0)]
 
-    def _traverse_for_relationships(self, node, all_entities: dict, current_top_level: str = None) -> None:
-        if current_top_level is None or self._is_new_top_level(node):
-            new_top_level = self._get_top_level_name(node)
-            if new_top_level and new_top_level in self.top_level_nodes:
-                current_top_level = new_top_level
+        while stack:
+            node, current_top_level, depth = stack.pop()
 
-        
-        if current_top_level:
-            if node.type == "call_expression":
-                self._extract_call_relationship(node, current_top_level, all_entities)
-            elif node.type == "new_expression":
-                self._extract_new_relationship(node, current_top_level, all_entities)
-            
-            elif node.type == "member_expression":
-                self._extract_member_relationship(node, current_top_level, all_entities)
-            elif node.type == "subscript_expression":
-                self._extract_subscript_relationship(node, current_top_level, all_entities)
-            
-            elif node.type == "type_annotation":
-                self._extract_type_relationship(node, current_top_level, all_entities)
-            elif node.type == "type_arguments":
-                self._extract_type_arguments_relationship(node, current_top_level, all_entities)
-            
-            elif node.type == "extends_clause":
-                self._extract_inheritance_relationship(node, current_top_level, all_entities)
-            elif node.type == "implements_clause":
-                self._extract_inheritance_relationship(node, current_top_level, all_entities)
+            if depth > max_depth:
+                continue
 
-        for child in node.children:
-            self._traverse_for_relationships(child, all_entities, current_top_level)
+            if current_top_level is None or self._is_new_top_level(node):
+                new_top_level = self._get_top_level_name(node)
+                if new_top_level and new_top_level in self.top_level_nodes:
+                    current_top_level = new_top_level
+
+            if current_top_level:
+                if node.type == "call_expression":
+                    self._extract_call_relationship(node, current_top_level, all_entities)
+                elif node.type == "new_expression":
+                    self._extract_new_relationship(node, current_top_level, all_entities)
+
+                elif node.type == "member_expression":
+                    self._extract_member_relationship(node, current_top_level, all_entities)
+                elif node.type == "subscript_expression":
+                    self._extract_subscript_relationship(node, current_top_level, all_entities)
+
+                elif node.type == "type_annotation":
+                    self._extract_type_relationship(node, current_top_level, all_entities)
+                elif node.type == "type_arguments":
+                    self._extract_type_arguments_relationship(node, current_top_level, all_entities)
+
+                elif node.type == "extends_clause":
+                    self._extract_inheritance_relationship(node, current_top_level, all_entities)
+                elif node.type == "implements_clause":
+                    self._extract_inheritance_relationship(node, current_top_level, all_entities)
+
+            for child in reversed(node.children):
+                stack.append((child, current_top_level, depth + 1))
     
     def _is_new_top_level(self, node) -> bool:
         return node.type in [
@@ -875,12 +890,21 @@ class TreeSitterTSAnalyzer:
         except Exception as e:
             logger.debug(f"Error extracting type relationship: {e}")
     
-    def _find_all_type_identifiers(self, node, type_identifiers: list) -> None:
-        if node.type == "type_identifier":
-            type_identifiers.append(node)
-        
-        for child in node.children:
-            self._find_all_type_identifiers(child, type_identifiers)
+    def _find_all_type_identifiers(self, root_node, type_identifiers: list, max_depth: int = 500) -> None:
+        """Find all type identifiers using iterative traversal."""
+        stack = [(root_node, 0)]
+
+        while stack:
+            node, depth = stack.pop()
+
+            if depth > max_depth:
+                continue
+
+            if node.type == "type_identifier":
+                type_identifiers.append(node)
+
+            for child in reversed(node.children):
+                stack.append((child, depth + 1))
     
     def _extract_type_arguments_relationship(self, node, caller_name: str, all_entities: dict) -> None:
         try:

@@ -210,7 +210,7 @@ Please shortlist the files, folders representing the core functionality and igno
 Reasoning at first, then return the list of relative paths in JSON format.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List
 from codewiki.src.utils import file_manager
 
 EXTENSION_TO_LANGUAGE = {
@@ -228,49 +228,51 @@ EXTENSION_TO_LANGUAGE = {
     ".hpp": "cpp",
     ".tsx": "typescript",
     ".cc": "cpp",
-    ".hpp": "cpp",
     ".cxx": "cpp",
     ".jsx": "javascript",
     ".mjs": "javascript",
     ".cjs": "javascript",
-    ".jsx": "javascript",
     ".cs": "csharp",
     ".php": "php",
     ".phtml": "php",
-    ".inc": "php"
+    ".inc": "php",
+    ".go": "go"
 }
+
+
+def _format_module_tree_lines(module_tree: dict, module_name: str = None, indent: int = 0) -> List[str]:
+    """Format module tree as indented lines."""
+    lines = []
+    for key, value in module_tree.items():
+        if key == module_name:
+            lines.append(f"{'  ' * indent}{key} (current module)")
+        else:
+            lines.append(f"{'  ' * indent}{key}")
+
+        components = value.get('components', [])
+        if components:
+            lines.append(f"{'  ' * (indent + 1)} Core components: {', '.join(components)}")
+
+        children = value.get("children", {})
+        if isinstance(children, dict) and len(children) > 0:
+            lines.append(f"{'  ' * (indent + 1)} Children:")
+            lines.extend(_format_module_tree_lines(children, module_name, indent + 2))
+    return lines
 
 
 def format_user_prompt(module_name: str, core_component_ids: list[str], components: Dict[str, Any], module_tree: dict[str, any]) -> str:
     """
     Format the user prompt with module name and organized core component codes.
-    
+
     Args:
         module_name: Name of the module to document
         core_component_ids: List of component IDs to include
         components: Dictionary mapping component IDs to CodeComponent objects
-    
+
     Returns:
         Formatted user prompt string
     """
-
-    # format module tree
-    lines = []
-    
-    def _format_module_tree(module_tree: dict[str, any], indent: int = 0):
-        for key, value in module_tree.items():
-            if key == module_name:
-                lines.append(f"{'  ' * indent}{key} (current module)")
-            else:
-                lines.append(f"{'  ' * indent}{key}")
-            
-            lines.append(f"{'  ' * (indent + 1)} Core components: {', '.join(value['components'])}")
-            if isinstance(value["children"], dict) and len(value["children"]) > 0:
-                lines.append(f"{'  ' * (indent + 1)} Children:")
-                _format_module_tree(value["children"], indent + 2)
-    
-    _format_module_tree(module_tree, 0)
-    formatted_module_tree = "\n".join(lines)
+    formatted_module_tree = "\n".join(_format_module_tree_lines(module_tree, module_name, 0))
 
     # print(f"Formatted module tree:\n{formatted_module_tree}")
 
@@ -311,32 +313,11 @@ def format_cluster_prompt(potential_core_components: str, module_tree: dict[str,
     """
     Format the cluster prompt with potential core components and module tree.
     """
-
-    # format module tree
-    lines = []
-
-    # print(f"Module tree:\n{json.dumps(module_tree, indent=2)}")
-    
-    def _format_module_tree(module_tree: dict[str, any], indent: int = 0):
-        for key, value in module_tree.items():
-            if key == module_name:
-                lines.append(f"{'  ' * indent}{key} (current module)")
-            else:
-                lines.append(f"{'  ' * indent}{key}")
-            
-            lines.append(f"{'  ' * (indent + 1)} Core components: {', '.join(value['components'])}")
-            if ("children" in value) and isinstance(value["children"], dict) and len(value["children"]) > 0:
-                lines.append(f"{'  ' * (indent + 1)} Children:")
-                _format_module_tree(value["children"], indent + 2)
-    
-    _format_module_tree(module_tree, 0)
-    formatted_module_tree = "\n".join(lines)
-
-
-    if module_tree == {}:
+    if not module_tree:
         return CLUSTER_REPO_PROMPT.format(potential_core_components=potential_core_components)
-    else:
-        return CLUSTER_MODULE_PROMPT.format(potential_core_components=potential_core_components, module_tree=formatted_module_tree, module_name=module_name)
+
+    formatted_module_tree = "\n".join(_format_module_tree_lines(module_tree, module_name, 0))
+    return CLUSTER_MODULE_PROMPT.format(potential_core_components=potential_core_components, module_tree=formatted_module_tree, module_name=module_name)
 
 
 def format_system_prompt(module_name: str, custom_instructions: str = None) -> str:

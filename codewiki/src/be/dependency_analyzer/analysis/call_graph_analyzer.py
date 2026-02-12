@@ -84,16 +84,14 @@ class CallGraphAnalyzer:
             if tree["type"] == "file":
                 ext = tree.get("extension", "").lower()
                 if ext in CODE_EXTENSIONS:
-                    name = tree["name"].lower()
-                    if not any(skip in name for skip in []):
-                        code_files.append(
-                            {
-                                "path": tree["path"],
-                                "name": tree["name"],
-                                "extension": ext,
-                                "language": CODE_EXTENSIONS[ext],
-                            }
-                        )
+                    code_files.append(
+                        {
+                            "path": tree["path"],
+                            "name": tree["name"],
+                            "extension": ext,
+                            "language": CODE_EXTENSIONS[ext],
+                        }
+                    )
             elif tree["type"] == "directory" and tree.get("children"):
                 for child in tree["children"]:
                     traverse(child)
@@ -134,13 +132,15 @@ class CallGraphAnalyzer:
                 self._analyze_cpp_file(file_path, content, repo_dir)
             elif language == "php":
                 self._analyze_php_file(file_path, content, repo_dir)
+            elif language == "go":
+                self._analyze_go_file(file_path, content, repo_dir)
             # else:
             #     logger.warning(
             #         f"Unsupported language for call graph analysis: {language} for file {file_path}"
             #     )
 
         except Exception as e:
-            logger.error(f"⚠️ Error analyzing {file_path}: {str(e)}")
+            logger.error(f"Error analyzing {file_path}: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
 
     def _analyze_python_file(self, file_path: str, content: str, base_dir: str):
@@ -324,6 +324,28 @@ class CallGraphAnalyzer:
         except Exception as e:
             logger.error(f"Failed to analyze PHP file {file_path}: {e}", exc_info=True)
 
+    def _analyze_go_file(self, file_path: str, content: str, repo_dir: str):
+        """
+        Analyze Go file using tree-sitter based analyzer.
+
+        Args:
+            file_path: Relative path to the Go file
+            content: File content string
+            repo_dir: Repository base directory
+        """
+        from codewiki.src.be.dependency_analyzer.analyzers.golang import analyze_go_file
+
+        try:
+            functions, relationships = analyze_go_file(file_path, content, repo_path=repo_dir)
+
+            for func in functions:
+                func_id = func.id if func.id else f"{file_path}:{func.name}"
+                self.functions[func_id] = func
+
+            self.call_relationships.extend(relationships)
+        except Exception as e:
+            logger.error(f"Failed to analyze Go file {file_path}: {e}", exc_info=True)
+
     def _resolve_call_relationships(self):
         """
         Resolve function call relationships across all languages.
@@ -348,18 +370,11 @@ class CallGraphAnalyzer:
             if callee_name in func_lookup:
                 relationship.callee = func_lookup[callee_name]
                 relationship.is_resolved = True
-                resolved_count += 1
             elif "." in callee_name:
-                if callee_name in func_lookup:
-                    relationship.callee = func_lookup[callee_name]
+                method_name = callee_name.split(".")[-1]
+                if method_name in func_lookup:
+                    relationship.callee = func_lookup[method_name]
                     relationship.is_resolved = True
-                    resolved_count += 1
-                else:
-                    method_name = callee_name.split(".")[-1]
-                    if method_name in func_lookup:
-                        relationship.callee = func_lookup[method_name]
-                        relationship.is_resolved = True
-                        resolved_count += 1
 
     def _deduplicate_relationships(self):
         """
@@ -410,6 +425,8 @@ class CallGraphAnalyzer:
                 node_classes.append("lang-cpp")
             elif file_ext in [".php", ".phtml", ".inc"]:
                 node_classes.append("lang-php")
+            elif file_ext == ".go":
+                node_classes.append("lang-go")
 
             cytoscape_elements.append(
                 {
@@ -483,53 +500,4 @@ class CallGraphAnalyzer:
                 for func in self.functions.values()
             },
         }
-
-    def _select_most_connected_nodes(self, target_count: int):
-        """
-        Select the most connected nodes from the call graph.
-
-        Args:
-            target_count: The number of nodes to select
-        """
-        if len(self.functions) <= target_count:
-            return
-
-        if not self.call_relationships:
-            logger.warning("No call relationships found - keeping all functions by name")
-            func_ids = list(self.functions.keys())[:target_count]
-            self.functions = {fid: func for fid, func in self.functions.items() if fid in func_ids}
-            return
-
-        graph = {}
-        for rel in self.call_relationships:
-            if rel.caller in self.functions:
-                if rel.caller not in graph:
-                    graph[rel.caller] = set()
-            if rel.callee in self.functions:
-                if rel.callee not in graph:
-                    graph[rel.callee] = set()
-
-            if rel.caller in graph and rel.callee in graph:
-                graph[rel.caller].add(rel.callee)
-                graph[rel.callee].add(rel.caller)
-
-        degree_centrality = {}
-        for func_id in self.functions.keys():
-            degree_centrality[func_id] = len(graph.get(func_id, set()))
-
-        sorted_func_ids = sorted(degree_centrality, key=degree_centrality.get, reverse=True)
-
-        selected_func_ids = sorted_func_ids[:target_count]
-
-        original_func_count = len(self.functions)
-        self.functions = {
-            fid: func for fid, func in self.functions.items() if fid in selected_func_ids
-        }
-
-        original_rel_count = len(self.call_relationships)
-        self.call_relationships = [
-            rel
-            for rel in self.call_relationships
-            if rel.caller in selected_func_ids and rel.callee in selected_func_ids
-        ]
 

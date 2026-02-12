@@ -20,6 +20,18 @@ from codewiki.src.be.dependency_analyzer.models.core import Repository
 
 logger = logging.getLogger(__name__)
 
+SUPPORTED_LANGUAGES = {
+    "python",
+    "javascript",
+    "typescript",
+    "java",
+    "csharp",
+    "c",
+    "cpp",
+    "php",
+    "go",
+}
+
 
 class AnalysisService:
     """
@@ -243,18 +255,6 @@ class AnalysisService:
 
     def _read_readme_file(self, repo_dir: str) -> Optional[str]:
         """Find and read the README file from the repository root."""
-        # possible_readme_names = ["README.md", "README", "readme.md", "README.txt"]
-        # for name in possible_readme_names:
-        #     readme_path = Path(repo_dir) / name
-        #     if readme_path.exists():
-        #         try:
-        #             logger.debug(f"Found README file at {readme_path}")
-        #             return readme_path.read_text(encoding="utf-8")
-        #         except Exception as e:
-        #             logger.warning(f"Could not read README file at {readme_path}: {e}")
-        #             return None
-        # logger.debug("No README file found in repository root.")
-        # return None
         base = Path(repo_dir)
         possible_readme_names = ["README.md", "README", "readme.md", "README.txt"]
         for name in possible_readme_names:
@@ -297,30 +297,17 @@ class AnalysisService:
         """
         Filter code files to only include supported languages.
 
-        Supports Python, JavaScript, TypeScript, Java, C#, C, C++, PHP, Go, and Rust.
+        Supports Python, JavaScript, TypeScript, Java, C#, C, C++, PHP, and Go.
         """
-        supported_languages = {
-            "python",
-            "javascript",
-            "typescript",
-            "java",
-            "csharp",
-            "c",
-            "cpp",
-            "php",
-            "go",
-            "rust",
-        }
-
         return [
             file_info
             for file_info in code_files
-            if file_info.get("language") in supported_languages
+            if file_info.get("language") in SUPPORTED_LANGUAGES
         ]
 
     def _get_supported_languages(self) -> List[str]:
         """Get list of currently supported languages for analysis."""
-        return ["python", "javascript", "typescript", "java", "csharp", "c", "cpp", "php"]
+        return list(SUPPORTED_LANGUAGES)
 
     def _cleanup_repository(self, temp_dir: str):
         """Clean up cloned repository."""
