@@ -56,6 +56,16 @@ class Node(BaseModel):
     parameter_count: int = 0
     maintainability_index: float = 100.0
 
+    # Advanced analysis fields (language-agnostic names, populated by Go analyzer first)
+    implements_interfaces: List[str] = []
+    spawns_goroutines: bool = False
+    uses_channels: bool = False
+    uses_select: bool = False
+    returns_error: bool = False
+    has_defers: bool = False
+    has_panic: bool = False
+    is_exported: bool = False
+
     def get_display_name(self) -> str:
         return self.display_name or self.name
 
@@ -68,6 +78,8 @@ class CallRelationship(BaseModel):
     call_line: Optional[int] = None
 
     is_resolved: bool = False
+
+    relationship_type: str = "calls"  # "calls" | "implements" | "embeds"
 
 
 class Repository(BaseModel):

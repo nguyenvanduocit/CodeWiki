@@ -8,7 +8,7 @@ Create documentation that helps developers and maintainers understand:
 1. The module's purpose and core functionality
 2. Architecture and component relationships
 3. How the module fits into the overall system
-4. Use the provided analysis metrics (PageRank, hub detection, complexity, TF-IDF keywords) to prioritize documentation depth — architecturally critical components deserve more detailed coverage
+4. Use the provided analysis metrics (PageRank, hub detection, complexity, TF-IDF keywords, interface implementations, concurrency patterns, error handling) to prioritize documentation depth — architecturally critical components deserve more detailed coverage
 </OBJECTIVES>
 
 <GENERATED_ARTIFACTS>
@@ -66,7 +66,7 @@ Create a comprehensive documentation that helps developers and maintainers under
 1. The module's purpose and core functionality
 2. Architecture and component relationships
 3. How the module fits into the overall system
-4. Use the provided analysis metrics (PageRank, hub detection, complexity, TF-IDF keywords) to prioritize documentation depth — architecturally critical components deserve more detailed coverage
+4. Use the provided analysis metrics (PageRank, hub detection, complexity, TF-IDF keywords, interface implementations, concurrency patterns, error handling) to prioritize documentation depth — architecturally critical components deserve more detailed coverage
 </OBJECTIVES>
 
 <GENERATED_ARTIFACTS>
@@ -373,6 +373,63 @@ def format_component_metrics(component_ids: list[str], components: Dict[str, Any
                 f"depends heavily on other modules"
             )
         sections.append("\n".join(lines))
+
+    # Interface implementations
+    impl_comps = [
+        cid for cid in component_ids
+        if cid in components and components[cid].implements_interfaces
+    ]
+    if impl_comps:
+        lines = ["## Interface Implementations"]
+        for cid in impl_comps:
+            node = components[cid]
+            ifaces = ", ".join(node.implements_interfaces)
+            lines.append(f"- **{node.name}** implements {ifaces}")
+        sections.append("\n".join(lines))
+
+    # Concurrency patterns
+    concurrent_comps = [
+        cid for cid in component_ids
+        if cid in components and (components[cid].spawns_goroutines or components[cid].uses_channels or components[cid].uses_select)
+    ]
+    if concurrent_comps:
+        lines = ["## Concurrency Patterns"]
+        for cid in concurrent_comps:
+            node = components[cid]
+            patterns = []
+            if node.spawns_goroutines:
+                patterns.append("goroutines")
+            if node.uses_channels:
+                patterns.append("channels")
+            if node.uses_select:
+                patterns.append("select")
+            lines.append(f"- **{node.name}** uses {', '.join(patterns)} — document concurrency behavior")
+        sections.append("\n".join(lines))
+
+    # Error handling patterns
+    error_comps = [
+        cid for cid in component_ids
+        if cid in components and (components[cid].returns_error or components[cid].has_panic)
+    ]
+    if error_comps:
+        lines = ["## Error Handling"]
+        for cid in error_comps:
+            node = components[cid]
+            patterns = []
+            if node.returns_error:
+                patterns.append("returns error")
+            if node.has_defers:
+                patterns.append("uses defer")
+            if node.has_panic:
+                patterns.append("panics")
+            lines.append(f"- **{node.name}** ({', '.join(patterns)})")
+        sections.append("\n".join(lines))
+
+    # API surface
+    exported_comps = [cid for cid in component_ids if cid in components and components[cid].is_exported]
+    unexported_comps = [cid for cid in component_ids if cid in components and not components[cid].is_exported]
+    if exported_comps:
+        sections.append(f"## API Surface\n- {len(exported_comps)} exported symbols, {len(unexported_comps)} internal — document the public API thoroughly")
 
     return "\n\n".join(sections) if sections else ""
 

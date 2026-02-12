@@ -78,6 +78,22 @@ def generate_codebase_map(
             "depends_on": list(node.depends_on)
         })
 
+        # Advanced analysis data (populated by Go analyzer, extensible to other languages)
+        has_analysis = (node.implements_interfaces or node.spawns_goroutines or
+                        node.uses_channels or node.uses_select or node.returns_error or
+                        node.has_defers or node.has_panic)
+        if has_analysis or node.is_exported:
+            nodes[-1]["analysis"] = {
+                "implements_interfaces": node.implements_interfaces,
+                "spawns_goroutines": node.spawns_goroutines,
+                "uses_channels": node.uses_channels,
+                "uses_select": node.uses_select,
+                "returns_error": node.returns_error,
+                "has_defers": node.has_defers,
+                "has_panic": node.has_panic,
+                "is_exported": node.is_exported,
+            }
+
         for dep in node.depends_on:
             edges.append({"source": comp_id, "target": dep, "type": "depends_on"})
 
@@ -114,6 +130,10 @@ def generate_codebase_map(
             "avg_maintainability": round(sum(n.maintainability_index for n in components.values()) / max(len(components), 1), 1),
             "high_cognitive_complexity": [n.name for n in components.values() if n.cognitive_complexity > 15][:10],
             "bottleneck_components": [n.name for n in components.values() if n.betweenness_centrality > 0.1][:10],
+            "interface_implementations": sum(1 for n in components.values() if n.implements_interfaces),
+            "concurrent_components": sum(1 for n in components.values() if n.spawns_goroutines or n.uses_channels),
+            "error_returning_functions": sum(1 for n in components.values() if n.returns_error),
+            "exported_symbols": sum(1 for n in components.values() if n.is_exported),
         }
     }
 

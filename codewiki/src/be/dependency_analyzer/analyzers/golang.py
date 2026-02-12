@@ -52,6 +52,8 @@ class TreeSitterGoAnalyzer:
         self._struct_fields: Dict[str, Dict[str, str]] = {}  # StructName -> {field: Type}
         self._func_signatures: Dict[str, Dict] = {}  # func_key -> {params: {name: type}, returns: [type]}
         self._current_scope_vars: Dict[str, str] = {}  # var_name -> Type (per-function)
+        self._interface_methods: Dict[str, Set[str]] = {}  # InterfaceName -> {method_name#param_count}
+        self._struct_methods: Dict[str, Set[str]] = {}  # StructName -> {method_name#param_count}
 
         self._analyze()
 
@@ -87,6 +89,10 @@ class TreeSitterGoAnalyzer:
             # For methods: module_path.ReceiverType.MethodName
             return f"{module_path}.{receiver_type}.{name}"
         return f"{module_path}.{name}" if module_path else name
+
+    def _is_exported(self, name: str) -> bool:
+        """Check if a Go identifier is exported (starts with uppercase)."""
+        return bool(name) and name[0].isupper()
 
     def _analyze(self):
         """Parse and analyze the Go file."""
@@ -234,8 +240,18 @@ class TreeSitterGoAnalyzer:
                 base_classes=None,
                 class_name=receiver_type,
                 display_name=f"{node_type} {display_name}",
-                component_id=component_id
+                component_id=component_id,
+                is_exported=self._is_exported(node_name)
             )
+
+            # Check return types for error
+            return_types = self._extract_return_types_from_func(node)
+            if any(self._normalize_type_name(t) == "error" for t in return_types):
+                node_obj.returns_error = True
+
+            # Scan function body for concurrency/error patterns
+            self._analyze_function_body(node, node_obj)
+
             self.nodes.append(node_obj)
             self._top_level_nodes[node_name] = node_obj
             if receiver_type:
@@ -271,22 +287,53 @@ class TreeSitterGoAnalyzer:
             base_classes=None,
             class_name=None,
             display_name=f"{node_type} {name}",
-            component_id=component_id
+            component_id=component_id,
+            is_exported=self._is_exported(name)
         )
         self.nodes.append(node_obj)
         self._top_level_nodes[name] = node_obj
 
+    def _analyze_function_body(self, func_node, node_obj: Node):
+        """Scan function body for concurrency, error handling, and control flow patterns."""
+        body = self._find_child_by_type(func_node, "block")
+        if not body:
+            return
+        self._scan_body_patterns(body, node_obj)
+
+    def _scan_body_patterns(self, node, node_obj: Node, depth: int = 0):
+        """Recursively scan AST for patterns."""
+        if depth > 50:
+            return
+        if node.type == "go_statement":
+            node_obj.spawns_goroutines = True
+        elif node.type == "select_statement":
+            node_obj.uses_select = True
+        elif node.type in ("send_statement", "receive_statement"):
+            node_obj.uses_channels = True
+        elif node.type == "defer_statement":
+            node_obj.has_defers = True
+        elif node.type == "call_expression":
+            func_child = node.children[0] if node.children else None
+            if func_child and func_child.type == "identifier" and func_child.text.decode() == "panic":
+                node_obj.has_panic = True
+        elif node.type == "channel_type":
+            node_obj.uses_channels = True
+        for child in node.children:
+            self._scan_body_patterns(child, node_obj, depth + 1)
+
     # ── Type resolution infrastructure ──
 
     def _build_type_context(self, root):
-        """Extract struct field types and function signatures for type resolution."""
+        """Extract struct field types, function signatures, and interface/struct method sets."""
         for child in root.children:
             if child.type == "type_declaration":
                 self._extract_struct_field_types(child)
+                self._extract_interface_method_sigs(child)
             elif child.type == "function_declaration":
                 self._extract_func_signature(child)
             elif child.type == "method_declaration":
                 self._extract_method_signature(child)
+                self._track_struct_method(child)
 
     def _extract_struct_field_types(self, node):
         """Extract field names and types from struct declarations."""
@@ -317,6 +364,43 @@ class TreeSitterGoAnalyzer:
                     field_type = self._normalize_type_name(type_node.text.decode())
                     for name in names:
                         self._struct_fields[struct_name][name] = field_type
+
+    def _extract_interface_method_sigs(self, type_decl_node):
+        """Extract method signatures from interface declarations for satisfaction checking."""
+        for child in type_decl_node.children:
+            if child.type != "type_spec":
+                continue
+            name_node = self._find_child_by_type(child, "type_identifier")
+            iface_node = self._find_child_by_type(child, "interface_type")
+            if not name_node or not iface_node:
+                continue
+            iface_name = name_node.text.decode()
+            self._interface_methods[iface_name] = set()
+            for spec in iface_node.children:
+                if spec.type in ("method_spec", "method_elem"):
+                    method_name_node = self._find_child_by_type(spec, "field_identifier")
+                    if method_name_node:
+                        method_name = method_name_node.text.decode()
+                        param_list = self._find_child_by_type(spec, "parameter_list")
+                        param_count = 0
+                        if param_list:
+                            param_count = sum(1 for c in param_list.children if c.type == "parameter_declaration")
+                        self._interface_methods[iface_name].add(f"{method_name}#{param_count}")
+
+    def _track_struct_method(self, method_node):
+        """Track method for struct method set (used for interface satisfaction)."""
+        receiver_type = self._extract_method_receiver_type(method_node)
+        name_node = self._find_child_by_type(method_node, "field_identifier")
+        if not receiver_type or not name_node:
+            return
+        if receiver_type not in self._struct_methods:
+            self._struct_methods[receiver_type] = set()
+        method_name = name_node.text.decode()
+        param_lists = [c for c in method_node.children if c.type == "parameter_list"]
+        param_count = 0
+        if len(param_lists) >= 2:
+            param_count = sum(1 for c in param_lists[1].children if c.type == "parameter_declaration")
+        self._struct_methods[receiver_type].add(f"{method_name}#{param_count}")
 
     def _extract_func_signature(self, node):
         """Extract function parameter types and return types."""
@@ -715,7 +799,8 @@ class TreeSitterGoAnalyzer:
                                     caller=caller_id,
                                     callee=embedded_type,
                                     call_line=node.start_point[0] + 1,
-                                    is_resolved=False
+                                    is_resolved=False,
+                                    relationship_type="embeds"
                                 ))
 
     def _process_interface_embedding(self, node):
@@ -725,7 +810,7 @@ class TreeSitterGoAnalyzer:
             return
 
         for child in node.children:
-            if child.type == "method_spec":
+            if child.type in ("method_spec", "method_elem"):
                 # Check if it's just a type (embedded interface)
                 has_name = any(c.type == "field_identifier" for c in child.children)
                 type_ids = [c for c in child.children if c.type == "type_identifier"]
@@ -738,7 +823,8 @@ class TreeSitterGoAnalyzer:
                             caller=caller_id,
                             callee=embedded_type,
                             call_line=node.start_point[0] + 1,
-                            is_resolved=False
+                            is_resolved=False,
+                            relationship_type="embeds"
                         ))
 
     def _find_containing_type_name(self, node) -> Optional[str]:
@@ -915,9 +1001,9 @@ class TreeSitterGoAnalyzer:
         return base_name in GO_BUILTINS
 
 
-def analyze_go_file(file_path: str, content: str, repo_path: str = None) -> Tuple[List[Node], List[CallRelationship]]:
+def analyze_go_file(file_path: str, content: str, repo_path: str = None) -> Tuple[List[Node], List[CallRelationship], Dict[str, Set[str]], Dict[str, Set[str]]]:
     """
-    Analyze a Go file and extract nodes and call relationships.
+    Analyze a Go file and extract nodes, call relationships, and type information.
 
     Args:
         file_path: Path to the Go file
@@ -925,7 +1011,7 @@ def analyze_go_file(file_path: str, content: str, repo_path: str = None) -> Tupl
         repo_path: Optional path to the repository root
 
     Returns:
-        Tuple of (nodes, call_relationships)
+        Tuple of (nodes, call_relationships, interface_methods, struct_methods)
     """
     analyzer = TreeSitterGoAnalyzer(file_path, content, repo_path)
-    return analyzer.nodes, analyzer.call_relationships
+    return analyzer.nodes, analyzer.call_relationships, analyzer._interface_methods, analyzer._struct_methods

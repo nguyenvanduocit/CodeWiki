@@ -6,7 +6,7 @@ Coordinates language-specific analyzers to build comprehensive call graphs
 across different programming languages in a repository.
 """
 
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Set
 import logging
 import os
 import traceback
@@ -80,7 +80,7 @@ def _dispatch_language_analyzer(
 
 def analyze_single_file(
     repo_dir: str, file_info: Dict
-) -> Tuple[Dict[str, Node], List[CallRelationship], Optional[str]]:
+) -> Tuple[Dict[str, Node], List[CallRelationship], Optional[str], Dict[str, Set[str]], Dict[str, Set[str]]]:
     """
     Analyze a single code file and return results.
 
@@ -92,11 +92,14 @@ def analyze_single_file(
         file_info: File information dictionary with 'path', 'language', etc.
 
     Returns:
-        Tuple of (functions dict, relationships list, error message or None)
+        Tuple of (functions dict, relationships list, error message or None,
+                  interface_methods, struct_methods)
     """
     functions: Dict[str, Node] = {}
     call_relationships: List[CallRelationship] = []
     error: Optional[str] = None
+    interface_methods: Dict[str, Set[str]] = {}
+    struct_methods: Dict[str, Set[str]] = {}
 
     base = Path(repo_dir)
     file_path = base / file_info["path"]
@@ -108,7 +111,10 @@ def analyze_single_file(
         )
 
         if file_results:
-            funcs, rels = file_results
+            if len(file_results) == 4:
+                funcs, rels, interface_methods, struct_methods = file_results
+            else:
+                funcs, rels = file_results
             for func in funcs:
                 func_id = func.id if func.id else f"{file_path}:{func.name}"
                 functions[func_id] = func
@@ -117,7 +123,7 @@ def analyze_single_file(
     except Exception as e:
         error = f"Error analyzing {file_path}: {str(e)}"
 
-    return functions, call_relationships, error
+    return functions, call_relationships, error, interface_methods, struct_methods
 
 
 class CallGraphAnalyzer:
@@ -125,6 +131,8 @@ class CallGraphAnalyzer:
         """Initialize the call graph analyzer."""
         self.functions: Dict[str, Node] = {}
         self.call_relationships: List[CallRelationship] = []
+        self._go_interface_methods: Dict[str, Set[str]] = {}  # InterfaceName -> {method sigs}
+        self._go_struct_methods: Dict[str, Set[str]] = {}  # StructName -> {method sigs}
         logger.debug("CallGraphAnalyzer initialized.")
 
     def analyze_code_files(self, code_files: List[Dict], base_dir: str) -> Dict:
@@ -156,7 +164,7 @@ class CallGraphAnalyzer:
                 for future in as_completed(futures):
                     file_info = futures[future]
                     try:
-                        funcs, rels, error = future.result()
+                        funcs, rels, error, iface_methods, struct_methods = future.result()
                         if error:
                             logger.error(error)
                             failed_files.append(file_info['path'])
@@ -164,6 +172,9 @@ class CallGraphAnalyzer:
                             logger.debug(f"Analyzed: {file_info['path']}")
                             self.functions.update(funcs)
                             self.call_relationships.extend(rels)
+                            # Aggregate Go interface/struct method data
+                            self._go_interface_methods.update(iface_methods)
+                            self._go_struct_methods.update(struct_methods)
                             files_analyzed += 1
                     except Exception as e:
                         logger.error(f"Failed to get result for {file_info['path']}: {e}")
@@ -190,6 +201,7 @@ class CallGraphAnalyzer:
 
         logger.debug("Resolving call relationships")
         self._resolve_call_relationships()
+        self._match_interface_implementations()
         self._deduplicate_relationships()
         viz_data = self._generate_visualization_data()
 
@@ -259,7 +271,12 @@ class CallGraphAnalyzer:
             )
 
             if file_results:
-                funcs, rels = file_results
+                if len(file_results) == 4:
+                    funcs, rels, iface_methods, struct_methods = file_results
+                    self._go_interface_methods.update(iface_methods)
+                    self._go_struct_methods.update(struct_methods)
+                else:
+                    funcs, rels = file_results
                 for func in funcs:
                     func_id = func.id if func.id else f"{file_path}:{func.name}"
                     self.functions[func_id] = func
@@ -320,6 +337,45 @@ class CallGraphAnalyzer:
                 unique_relationships.append(rel)
 
         self.call_relationships = unique_relationships
+
+    def _match_interface_implementations(self):
+        """Match structs to interfaces they satisfy based on method sets."""
+        if not self._go_interface_methods or not self._go_struct_methods:
+            return
+
+        # Build lookup: interface name -> Node
+        interface_nodes = {}
+        struct_nodes = {}
+        for func_id, node in self.functions.items():
+            if node.component_type == "interface" and node.name in self._go_interface_methods:
+                interface_nodes[node.name] = node
+            elif node.component_type == "struct" and node.name in self._go_struct_methods:
+                struct_nodes[node.name] = node
+
+        matched = 0
+        for struct_name, struct_sigs in self._go_struct_methods.items():
+            for iface_name, iface_sigs in self._go_interface_methods.items():
+                if not iface_sigs:
+                    continue  # Skip empty interfaces
+                if iface_sigs.issubset(struct_sigs):
+                    # Struct satisfies interface
+                    if struct_name in struct_nodes:
+                        struct_node = struct_nodes[struct_name]
+                        if iface_name not in struct_node.implements_interfaces:
+                            struct_node.implements_interfaces.append(iface_name)
+
+                    # Create implements relationship
+                    if struct_name in struct_nodes and iface_name in interface_nodes:
+                        self.call_relationships.append(CallRelationship(
+                            caller=struct_nodes[struct_name].id,
+                            callee=interface_nodes[iface_name].id,
+                            relationship_type="implements",
+                            is_resolved=True
+                        ))
+                        matched += 1
+
+        if matched:
+            logger.info(f"Matched {matched} interface implementation(s)")
 
     def _generate_visualization_data(self) -> Dict:
         """

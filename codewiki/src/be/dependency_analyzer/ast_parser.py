@@ -87,7 +87,16 @@ class DependencyParser:
                 base_classes=func_dict.get("base_classes"),
                 class_name=func_dict.get("class_name"),
                 display_name=func_dict.get("display_name", ""),
-                component_id=component_id
+                component_id=component_id,
+                # Advanced analysis fields (populated by language-specific analyzers)
+                implements_interfaces=func_dict.get("implements_interfaces", []),
+                spawns_goroutines=func_dict.get("spawns_goroutines", False),
+                uses_channels=func_dict.get("uses_channels", False),
+                uses_select=func_dict.get("uses_select", False),
+                returns_error=func_dict.get("returns_error", False),
+                has_defers=func_dict.get("has_defers", False),
+                has_panic=func_dict.get("has_panic", False),
+                is_exported=func_dict.get("is_exported", False),
             )
             
             self.components[component_id] = node
