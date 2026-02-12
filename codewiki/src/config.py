@@ -11,6 +11,7 @@ DEPENDENCY_GRAPHS_DIR = 'dependency_graphs'
 DOCS_DIR = 'docs'
 INITIAL_MODULE_TREE_FILENAME = 'initial_module_tree.json'
 MODULE_TREE_FILENAME = 'module_tree.json'
+METADATA_FILENAME = 'metadata.json'
 OVERVIEW_FILENAME = 'overview.md'
 MAX_DEPTH = 2
 # Default max token settings
