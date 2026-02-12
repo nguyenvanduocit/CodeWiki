@@ -4,6 +4,7 @@ from codewiki.src.config import Config
 from codewiki.src.be.dependency_analyzer.ast_parser import DependencyParser
 from codewiki.src.be.dependency_analyzer.topo_sort import build_graph_from_components, get_leaf_nodes, _get_valid_leaf_types
 from codewiki.src.utils import file_manager
+import networkx as nx
 from codewiki.src.be.graph_metrics import compute_graph_metrics
 from codewiki.src.be.tfidf_keywords import compute_tfidf_keywords
 from codewiki.src.be.complexity_scorer import compute_complexity_scores
@@ -57,8 +58,15 @@ class DependencyGraphBuilder:
         graph = build_graph_from_components(components)
         self.graph = graph
 
+        # Convert adjacency dict to networkx DiGraph for metrics computation
+        nx_graph = nx.DiGraph()
+        for node_id, deps in graph.items():
+            nx_graph.add_node(node_id)
+            for dep in deps:
+                nx_graph.add_edge(node_id, dep)
+
         # Compute graph metrics, TF-IDF keywords, and complexity scores
-        self.circular_deps = compute_graph_metrics(components, graph)
+        self.circular_deps = compute_graph_metrics(components, nx_graph)
         compute_tfidf_keywords(components)
         compute_complexity_scores(components)
 
