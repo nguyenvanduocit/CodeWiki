@@ -220,14 +220,16 @@ class TreeSitterVueAnalyzer:
                 stack.append(child)
 
     def _extract_template_element(self, node, component_id: str) -> None:
-        tag_node = node if node.type == "self_closing_tag" else None
-        for child in node.children:
-            if child.type == "start_tag":
-                tag_node = child
-                break
-            elif child.type == "self_closing_tag":
-                tag_node = child
-                break
+        if node.type == "self_closing_tag":
+            tag_node = node
+        else:
+            # For element nodes, only process start_tag.
+            # self_closing_tag children are handled when popped from stack directly.
+            tag_node = None
+            for child in node.children:
+                if child.type == "start_tag":
+                    tag_node = child
+                    break
 
         if tag_node is None:
             return
