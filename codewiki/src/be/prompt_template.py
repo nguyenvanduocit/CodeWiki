@@ -11,6 +11,17 @@ Create documentation that helps developers and maintainers understand:
 4. Use the provided analysis metrics (PageRank, hub detection, complexity, TF-IDF keywords, interface implementations, concurrency patterns, error handling) to prioritize documentation depth — architecturally critical components deserve more detailed coverage
 </OBJECTIVES>
 
+<ANALYSIS_DOCUMENTATION_GUIDE>
+When analysis metrics are provided for components, use this guide to produce actionable documentation:
+
+- **Hub components** (high fan-in/fan-out): Dedicate a subsection. Document who calls this component, what it delegates to, and what would break if it changed. Include a Mermaid dependency diagram showing callers and callees.
+- **Interface implementations**: Document the contract each interface defines, which concrete types and methods satisfy it, and where the interface is consumed (dependency injection points, function parameters).
+- **Concurrency patterns**: For goroutines — document lifecycle (start, shutdown, cancellation). For channels — document direction, buffering strategy, and close responsibility. For select statements — document each case and timeout behavior.
+- **Error handling**: Document what error conditions each function returns, what resources defer statements clean up, and if panic/recover is used, document the recovery strategy and when panics are expected.
+- **API surface** (exported symbols): Prioritize documenting every exported function/type with its purpose, parameters, and return values. Internal helpers need less coverage.
+- **High complexity components**: Include a Mermaid flowchart of the decision logic. Document edge cases and primary branching conditions explicitly.
+</ANALYSIS_DOCUMENTATION_GUIDE>
+
 <GENERATED_ARTIFACTS>
 Pre-computed analysis artifacts are available in the docs directory. Read them for deeper architectural context:
 - `codebase_map.json`: Dependency graph summary with per-component metrics (PageRank, betweenness, complexity, community IDs), circular dependencies, temporal couplings, and architectural violations
@@ -69,6 +80,17 @@ Create a comprehensive documentation that helps developers and maintainers under
 4. Use the provided analysis metrics (PageRank, hub detection, complexity, TF-IDF keywords, interface implementations, concurrency patterns, error handling) to prioritize documentation depth — architecturally critical components deserve more detailed coverage
 </OBJECTIVES>
 
+<ANALYSIS_DOCUMENTATION_GUIDE>
+When analysis metrics are provided for components, use this guide to produce actionable documentation:
+
+- **Hub components** (high fan-in/fan-out): Dedicate a subsection. Document who calls this component, what it delegates to, and what would break if it changed. Include a Mermaid dependency diagram showing callers and callees.
+- **Interface implementations**: Document the contract each interface defines, which concrete types and methods satisfy it, and where the interface is consumed (dependency injection points, function parameters).
+- **Concurrency patterns**: For goroutines — document lifecycle (start, shutdown, cancellation). For channels — document direction, buffering strategy, and close responsibility. For select statements — document each case and timeout behavior.
+- **Error handling**: Document what error conditions each function returns, what resources defer statements clean up, and if panic/recover is used, document the recovery strategy and when panics are expected.
+- **API surface** (exported symbols): Prioritize documenting every exported function/type with its purpose, parameters, and return values. Internal helpers need less coverage.
+- **High complexity components**: Include a Mermaid flowchart of the decision logic. Document edge cases and primary branching conditions explicitly.
+</ANALYSIS_DOCUMENTATION_GUIDE>
+
 <GENERATED_ARTIFACTS>
 Pre-computed analysis artifacts are available in the docs directory. Read them for deeper architectural context:
 - `codebase_map.json`: Dependency graph summary with per-component metrics (PageRank, betweenness, complexity, community IDs), circular dependencies, temporal couplings, and architectural violations
@@ -125,7 +147,7 @@ Provide `{repo_name}` repo structure and its core modules documentation:
 <REPO_STRUCTURE>
 {repo_structure}
 </REPO_STRUCTURE>
-
+{summary_metrics_section}
 Please generate the overview of the `{repo_name}` repository in markdown format with the following structure:
 <OVERVIEW>
 overview_content
@@ -312,9 +334,10 @@ def format_component_metrics(component_ids: list[str], components: Dict[str, Any
             node = components[cid]
             lines.append(
                 f"- **{node.name}** (PageRank: {node.pagerank:.4f}, "
-                f"betweenness: {node.betweenness_centrality:.4f}, "
-                f"fan-in: {node.fan_in}, fan-out: {node.fan_out}) — "
-                f"high connectivity, document thoroughly"
+                f"betweenness: {node.betweenness_centrality:.4f}) — "
+                f"Document: who calls this component (fan-in={node.fan_in} callers), "
+                f"what it delegates to (fan-out={node.fan_out} callees), "
+                f"and what breaks if this component changes. Include a Mermaid dependency diagram."
             )
         sections.append("\n".join(lines))
 
@@ -343,7 +366,9 @@ def format_component_metrics(component_ids: list[str], components: Dict[str, Any
             node = components[cid]
             lines.append(
                 f"- **{node.name}** (CC: {node.cyclomatic_complexity}, cognitive: {node.cognitive_complexity}, "
-                f"MI: {node.maintainability_index:.1f}/100) — document logic flow carefully"
+                f"MI: {node.maintainability_index:.1f}/100) — "
+                f"Document: include a Mermaid flowchart of the decision logic, "
+                f"list edge cases, and explain primary branching conditions."
             )
         sections.append("\n".join(lines))
 
@@ -370,7 +395,7 @@ def format_component_metrics(component_ids: list[str], components: Dict[str, Any
             node = components[cid]
             lines.append(
                 f"- **{node.name}** (instability: {node.instability:.2f}) — "
-                f"depends heavily on other modules"
+                f"Document: list external dependencies and explain the impact of upstream changes."
             )
         sections.append("\n".join(lines))
 
@@ -384,7 +409,7 @@ def format_component_metrics(component_ids: list[str], components: Dict[str, Any
         for cid in impl_comps:
             node = components[cid]
             ifaces = ", ".join(node.implements_interfaces)
-            lines.append(f"- **{node.name}** implements {ifaces}")
+            lines.append(f"- **{node.name}** implements: {ifaces}. Document: what contract each interface defines, which methods satisfy it, and dependency injection points where the interface is consumed.")
         sections.append("\n".join(lines))
 
     # Concurrency patterns
@@ -398,12 +423,12 @@ def format_component_metrics(component_ids: list[str], components: Dict[str, Any
             node = components[cid]
             patterns = []
             if node.spawns_goroutines:
-                patterns.append("goroutines")
+                patterns.append("goroutines (document lifecycle: start, shutdown, cancellation)")
             if node.uses_channels:
-                patterns.append("channels")
+                patterns.append("channels (document direction, buffering, close responsibility)")
             if node.uses_select:
-                patterns.append("select")
-            lines.append(f"- **{node.name}** uses {', '.join(patterns)} — document concurrency behavior")
+                patterns.append("select (document each case and timeout behavior)")
+            lines.append(f"- **{node.name}**: {'; '.join(patterns)}")
         sections.append("\n".join(lines))
 
     # Error handling patterns
@@ -417,21 +442,68 @@ def format_component_metrics(component_ids: list[str], components: Dict[str, Any
             node = components[cid]
             patterns = []
             if node.returns_error:
-                patterns.append("returns error")
+                patterns.append("returns error (document each error condition)")
             if node.has_defers:
-                patterns.append("uses defer")
+                patterns.append("uses defer (document resources being cleaned up)")
             if node.has_panic:
-                patterns.append("panics")
-            lines.append(f"- **{node.name}** ({', '.join(patterns)})")
+                patterns.append("has panic (document recovery strategy and expected panic triggers)")
+            lines.append(f"- **{node.name}**: {'; '.join(patterns)}")
         sections.append("\n".join(lines))
 
     # API surface
     exported_comps = [cid for cid in component_ids if cid in components and components[cid].is_exported]
     unexported_comps = [cid for cid in component_ids if cid in components and not components[cid].is_exported]
     if exported_comps:
-        sections.append(f"## API Surface\n- {len(exported_comps)} exported symbols, {len(unexported_comps)} internal — document the public API thoroughly")
+        lines = ["## API Surface"]
+        exported_names = [components[cid].name for cid in exported_comps]
+        internal_names = [components[cid].name for cid in unexported_comps]
+        lines.append(f"Exported ({len(exported_names)}): {', '.join(exported_names)}")
+        if internal_names:
+            lines.append(f"Internal ({len(internal_names)}): {', '.join(internal_names)}")
+        lines.append("Document every exported function/type with purpose, parameters, and return values.")
+        sections.append("\n".join(lines))
 
     return "\n\n".join(sections) if sections else ""
+
+
+def format_summary_metrics_section(summary_metrics: dict) -> str:
+    """Format codebase-wide summary metrics for the repo overview prompt."""
+    if not summary_metrics:
+        return ""
+
+    sections = []
+
+    circular = summary_metrics.get("circular_dependencies", [])
+    if circular:
+        sections.append(f"- **Circular dependencies**: {len(circular)} detected — explain each cycle and its architectural impact")
+
+    hubs = summary_metrics.get("hub_files", [])
+    bottlenecks = summary_metrics.get("bottleneck_components", [])
+    if hubs or bottlenecks:
+        names = sorted(set(hubs + bottlenecks))
+        sections.append(f"- **Bottleneck/hub components**: {', '.join(names)} — highlight these as architectural hotspots")
+
+    avg_mi = summary_metrics.get("avg_maintainability", 0)
+    if avg_mi > 0:
+        sections.append(f"- **Average maintainability index**: {avg_mi}/100")
+
+    concurrent = summary_metrics.get("concurrent_components", 0)
+    if concurrent:
+        sections.append(f"- **Concurrent components**: {concurrent} — document the concurrency architecture and synchronization strategy")
+
+    iface = summary_metrics.get("interface_implementations", 0)
+    if iface:
+        sections.append(f"- **Interface implementations**: {iface} — document the abstraction boundaries and contracts")
+
+    exported = summary_metrics.get("exported_symbols", 0)
+    err_funcs = summary_metrics.get("error_returning_functions", 0)
+    if exported:
+        sections.append(f"- **Exported symbols**: {exported}, error-returning functions: {err_funcs}")
+
+    if not sections:
+        return ""
+
+    return "\n<CODEBASE_ANALYSIS_SUMMARY>\n" + "\n".join(sections) + "\n</CODEBASE_ANALYSIS_SUMMARY>"
 
 
 def format_user_prompt(module_name: str, core_component_ids: list[str], components: Dict[str, Any], module_tree: Dict[str, Any]) -> str:
@@ -487,7 +559,14 @@ def format_user_prompt(module_name: str, core_component_ids: list[str], componen
 <ANALYSIS_METRICS>
 {metrics_text}
 </ANALYSIS_METRICS>
-* NOTE: Use these metrics to understand architectural significance. Hub components should get more detailed coverage. High complexity components need careful documentation of their logic flow.
+* NOTE: Use these metrics to guide documentation depth and focus:
+  - Hub components → dedicate a subsection with dependency diagram
+  - Interface implementations → document contracts and satisfaction
+  - Concurrency patterns → document goroutine lifecycle, channel protocols, select behavior
+  - Error handling → document error conditions, defer cleanup, panic recovery
+  - API surface → prioritize exported symbol documentation
+  - High complexity → include flowchart and document branching logic
+  - Unstable components → document external dependencies and change impact
 """
 
     return USER_PROMPT.format(module_name=module_name, formatted_core_component_codes=core_component_codes, module_tree=formatted_module_tree, analysis_metrics=analysis_metrics)

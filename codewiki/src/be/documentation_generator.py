@@ -11,6 +11,7 @@ from codewiki.src.be.llm_services import call_llm
 from codewiki.src.be.prompt_template import (
     REPO_OVERVIEW_PROMPT,
     MODULE_OVERVIEW_PROMPT,
+    format_summary_metrics_section,
 )
 from codewiki.src.be.cluster_modules import cluster_modules
 from codewiki.src.config import (
@@ -307,7 +308,21 @@ class DocumentationGenerator:
         if module_path:
             prompt = MODULE_OVERVIEW_PROMPT.format(module_name=module_name, repo_structure=structure_json)
         else:
-            prompt = REPO_OVERVIEW_PROMPT.format(repo_name=module_name, repo_structure=structure_json)
+            # Load summary metrics from codebase_map.json for repo overview
+            summary_metrics_section = ""
+            codebase_map_path = os.path.join(working_dir, "codebase_map.json")
+            if os.path.exists(codebase_map_path):
+                try:
+                    codebase_map = file_manager.load_json(codebase_map_path)
+                    summary_metrics = codebase_map.get("summary_metrics", {})
+                    summary_metrics_section = format_summary_metrics_section(summary_metrics)
+                except Exception as e:
+                    logger.warning(f"Could not load codebase_map.json for summary metrics: {e}")
+            prompt = REPO_OVERVIEW_PROMPT.format(
+                repo_name=module_name,
+                repo_structure=structure_json,
+                summary_metrics_section=summary_metrics_section,
+            )
 
         try:
             parent_docs = await self._call_llm(prompt)
