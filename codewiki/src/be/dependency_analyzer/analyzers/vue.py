@@ -128,6 +128,11 @@ class TreeSitterVueAnalyzer:
         try:
             script_block = self._extract_script_block()
             template_node = self._extract_template_node()
+
+            # Nothing to analyze if there's no script and no template
+            if not script_block and not template_node:
+                return
+
             module_path = self._get_module_path()
             component_id = module_path
 
@@ -202,10 +207,136 @@ class TreeSitterVueAnalyzer:
         )
 
     def _analyze_template(self, template_node, component_id: str) -> None:
-        pass  # Implemented in Task 4
+        stack = [template_node]
+        while stack:
+            node = stack.pop()
+
+            if node.type in ("element", "self_closing_tag"):
+                self._extract_template_element(node, component_id)
+            elif node.type == "interpolation":
+                self._extract_interpolation(node, component_id)
+
+            for child in node.children:
+                stack.append(child)
+
+    def _extract_template_element(self, node, component_id: str) -> None:
+        tag_node = node if node.type == "self_closing_tag" else None
+        for child in node.children:
+            if child.type == "start_tag":
+                tag_node = child
+                break
+            elif child.type == "self_closing_tag":
+                tag_node = child
+                break
+
+        if tag_node is None:
+            return
+
+        tag_name = None
+        for child in tag_node.children:
+            if child.type == "tag_name":
+                tag_name = child.text.decode("utf8")
+                break
+
+        if not tag_name:
+            return
+
+        # Component reference: PascalCase tag that isn't a built-in
+        if tag_name[0].isupper() and tag_name.lower() not in self.VUE_BUILTINS:
+            self.call_relationships.append(
+                CallRelationship(
+                    caller=component_id,
+                    callee=tag_name,
+                    call_line=tag_node.start_point[0] + 1,
+                    relationship_type="uses_component",
+                )
+            )
+
+        # Directive attributes: @event and :binding
+        for child in tag_node.children:
+            if child.type == "directive_attribute":
+                self._extract_directive(child, component_id)
+
+    def _extract_directive(self, node, component_id: str) -> None:
+        directive_name = None
+        value = None
+
+        for child in node.children:
+            if child.type == "directive_name":
+                directive_name = child.text.decode("utf8")
+            elif child.type == "quoted_attribute_value":
+                for v in child.children:
+                    if v.type == "attribute_value":
+                        value = v.text.decode("utf8")
+
+        if not directive_name or not value:
+            return
+
+        # Simple identifier check: no spaces, dots, parens, brackets, operators
+        is_simple_identifier = bool(re.match(r"^[a-zA-Z_$][a-zA-Z0-9_$]*$", value))
+
+        if directive_name == "@" and is_simple_identifier:
+            # Event handler: @click="handleClick"
+            self.call_relationships.append(
+                CallRelationship(
+                    caller=component_id,
+                    callee=value,
+                    call_line=node.start_point[0] + 1,
+                    relationship_type="calls",
+                )
+            )
+        elif directive_name == ":" and is_simple_identifier:
+            # Prop binding: :title="pageTitle"
+            self.call_relationships.append(
+                CallRelationship(
+                    caller=component_id,
+                    callee=value,
+                    call_line=node.start_point[0] + 1,
+                    relationship_type="references",
+                )
+            )
+
+    def _extract_interpolation(self, node, component_id: str) -> None:
+        for child in node.children:
+            if child.type == "raw_text":
+                text = child.text.decode("utf8").strip()
+                if re.match(r"^[a-zA-Z_$][a-zA-Z0-9_$]*$", text):
+                    self.call_relationships.append(
+                        CallRelationship(
+                            caller=component_id,
+                            callee=text,
+                            call_line=child.start_point[0] + 1,
+                            relationship_type="references",
+                        )
+                    )
 
     def _enrich_vue_metadata(self) -> None:
-        pass  # Implemented in Task 5
+        # Build lookup of callee names per node for reactivity detection
+        node_callees = {}
+        for rel in self.call_relationships:
+            if rel.caller not in node_callees:
+                node_callees[rel.caller] = set()
+            node_callees[rel.caller].add(rel.callee)
+
+        for node in self.nodes:
+            if node.component_type == "vue_component":
+                continue
+
+            # Detect Vue macros (defineProps, defineEmits, etc.)
+            if node.name in self.VUE_MACROS:
+                if node.name == "defineProps":
+                    node.component_type = "vue_props"
+                elif node.name == "defineEmits":
+                    node.component_type = "vue_emits"
+
+            # Detect reactivity wrappers on variables
+            if node.component_type == "variable" and node.id in node_callees:
+                callees = node_callees[node.id]
+                for callee in callees:
+                    callee_name = callee.split(".")[-1]
+                    if callee_name in self.VUE_REACTIVITY_FNS:
+                        node.node_type = callee_name
+                        break
 
 
 def analyze_vue_file(
