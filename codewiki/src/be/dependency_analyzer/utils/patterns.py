@@ -154,6 +154,7 @@ DEFAULT_INCLUDE_PATTERNS = [
     "*.ts",
     "*.jsx",
     "*.tsx",
+    "*.vue",
     "*.java",
     "*.cpp",
     "*.c",
@@ -208,6 +209,7 @@ CODE_EXTENSIONS = {
     ".kt": "kotlin",
     ".scala": "scala",
     ".cs": "csharp",
+    ".vue": "vue",
 }
 
 # Entry point file patterns for all supported languages

@@ -37,6 +37,11 @@ def _dispatch_language_analyzer(
     Returns:
         Tuple of (nodes, relationships) or None if language is unsupported
     """
+    # Vue requires two-stage parsing - always use hand-coded analyzer
+    if language == "vue":
+        from codewiki.src.be.dependency_analyzer.analyzers.vue import analyze_vue_file
+        return analyze_vue_file(file_path, content, repo_path=repo_dir)
+
     # Try query-based analyzer first (skip Go: hand-coded analyzer has type resolution)
     if language != "go":
         try:
@@ -410,6 +415,8 @@ class CallGraphAnalyzer:
                 node_classes.append("lang-php")
             elif file_ext == ".go":
                 node_classes.append("lang-go")
+            elif file_ext == ".vue":
+                node_classes.append("lang-vue")
 
             cytoscape_elements.append(
                 {

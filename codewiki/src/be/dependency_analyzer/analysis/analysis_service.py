@@ -30,6 +30,7 @@ SUPPORTED_LANGUAGES = {
     "cpp",
     "php",
     "go",
+    "vue",
 }
 
 

@@ -1,0 +1,224 @@
+import logging
+import os
+import re
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+from pathlib import Path
+
+from tree_sitter import Parser
+from tree_sitter_language_pack import get_language
+
+from codewiki.src.be.dependency_analyzer.models.core import Node, CallRelationship
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ScriptBlock:
+    content: str
+    lang: str
+    is_setup: bool
+    start_line: int
+
+
+class TreeSitterVueAnalyzer:
+
+    VUE_BUILTINS = {
+        "slot", "component", "transition", "transition-group",
+        "keep-alive", "teleport", "suspense",
+    }
+
+    VUE_REACTIVITY_FNS = {
+        "ref", "reactive", "computed", "readonly",
+        "shallowRef", "shallowReactive", "toRef", "toRefs",
+    }
+
+    VUE_LIFECYCLE_HOOKS = {
+        "onMounted", "onUpdated", "onUnmounted",
+        "onBeforeMount", "onBeforeUpdate", "onBeforeUnmount",
+        "onActivated", "onDeactivated", "onErrorCaptured",
+        "onRenderTracked", "onRenderTriggered", "onServerPrefetch",
+    }
+
+    VUE_MACROS = {"defineProps", "defineEmits", "defineExpose", "defineSlots", "defineModel", "withDefaults"}
+
+    def __init__(self, file_path: str, content: str, repo_path: str = None):
+        self.file_path = Path(file_path)
+        self.content = content
+        self.repo_path = repo_path or ""
+        self.nodes: List[Node] = []
+        self.call_relationships: List[CallRelationship] = []
+
+        try:
+            self.vue_language = get_language("vue")
+            self.parser = Parser()
+            self.parser.language = self.vue_language
+            self.tree = self.parser.parse(bytes(content, "utf8"))
+        except Exception as e:
+            logger.error(f"Failed to initialize Vue parser: {e}")
+            self.parser = None
+            self.tree = None
+
+    def _extract_script_block(self) -> Optional[ScriptBlock]:
+        if self.tree is None:
+            return None
+
+        root = self.tree.root_node
+        for child in root.children:
+            if child.type == "script_element":
+                start_tag = None
+                raw_text = None
+                for sub in child.children:
+                    if sub.type == "start_tag":
+                        start_tag = sub
+                    elif sub.type == "raw_text":
+                        raw_text = sub
+
+                if raw_text is None:
+                    return None
+
+                is_setup = False
+                lang = ""
+                if start_tag:
+                    for attr in start_tag.children:
+                        if attr.type == "attribute":
+                            attr_name = None
+                            attr_value = None
+                            for attr_child in attr.children:
+                                if attr_child.type == "attribute_name":
+                                    attr_name = attr_child.text.decode("utf8")
+                                elif attr_child.type == "quoted_attribute_value":
+                                    for v in attr_child.children:
+                                        if v.type == "attribute_value":
+                                            attr_value = v.text.decode("utf8")
+                            if attr_name == "setup":
+                                is_setup = True
+                            elif attr_name == "lang" and attr_value:
+                                lang = attr_value
+
+                content = raw_text.text.decode("utf8")
+                if content.startswith("\n"):
+                    content = content[1:]
+                    start_line = raw_text.start_point[0] + 1
+                else:
+                    start_line = raw_text.start_point[0]
+
+                return ScriptBlock(
+                    content=content,
+                    lang=lang,
+                    is_setup=is_setup,
+                    start_line=start_line,
+                )
+        return None
+
+    def _extract_template_node(self):
+        if self.tree is None:
+            return None
+
+        root = self.tree.root_node
+        for child in root.children:
+            if child.type == "template_element":
+                return child
+        return None
+
+    def analyze(self) -> None:
+        if self.tree is None:
+            return
+
+        try:
+            script_block = self._extract_script_block()
+            template_node = self._extract_template_node()
+            module_path = self._get_module_path()
+            component_id = module_path
+
+            # Stage 1: Analyze script block with existing TS/JS analyzer
+            if script_block and script_block.content.strip():
+                self._analyze_script(script_block)
+
+            # Stage 2: Analyze template for component refs, events, bindings
+            if template_node:
+                self._analyze_template(template_node, component_id)
+
+            # Create top-level vue_component node
+            self._create_component_node(component_id, module_path)
+
+            # Post-process: enrich Vue-specific metadata
+            self._enrich_vue_metadata()
+
+        except Exception as e:
+            logger.error(f"Error analyzing Vue file {self.file_path}: {e}", exc_info=True)
+
+    def _analyze_script(self, script_block: ScriptBlock) -> None:
+        use_ts = script_block.lang in ("ts", "tsx") or script_block.is_setup
+
+        if use_ts:
+            from codewiki.src.be.dependency_analyzer.analyzers.typescript import TreeSitterTSAnalyzer
+            sub_analyzer = TreeSitterTSAnalyzer(
+                str(self.file_path), script_block.content, self.repo_path
+            )
+        else:
+            from codewiki.src.be.dependency_analyzer.analyzers.javascript import TreeSitterJSAnalyzer
+            sub_analyzer = TreeSitterJSAnalyzer(
+                str(self.file_path), script_block.content, self.repo_path
+            )
+
+        sub_analyzer.analyze()
+
+        # Fix line offsets — map back to original .vue file positions
+        offset = script_block.start_line
+        for node in sub_analyzer.nodes:
+            node.start_line += offset
+            node.end_line += offset
+        for rel in sub_analyzer.call_relationships:
+            if rel.call_line is not None:
+                rel.call_line += offset
+
+        self.nodes.extend(sub_analyzer.nodes)
+        self.call_relationships.extend(sub_analyzer.call_relationships)
+
+    def _get_module_path(self) -> str:
+        rel_path = os.path.relpath(str(self.file_path), self.repo_path)
+        for ext in [".vue"]:
+            if rel_path.endswith(ext):
+                rel_path = rel_path[: -len(ext)]
+                break
+        return rel_path.replace("/", ".").replace("\\", ".")
+
+    def _create_component_node(self, component_id: str, module_path: str) -> None:
+        rel_path = os.path.relpath(str(self.file_path), self.repo_path)
+        self.nodes.insert(
+            0,
+            Node(
+                id=component_id,
+                name=self.file_path.stem,
+                component_type="vue_component",
+                file_path=str(self.file_path),
+                relative_path=rel_path,
+                source_code=self.content,
+                start_line=1,
+                end_line=self.content.count("\n") + 1,
+                component_id=component_id,
+            ),
+        )
+
+    def _analyze_template(self, template_node, component_id: str) -> None:
+        pass  # Implemented in Task 4
+
+    def _enrich_vue_metadata(self) -> None:
+        pass  # Implemented in Task 5
+
+
+def analyze_vue_file(
+    file_path: str, content: str, repo_path: str = None
+) -> Tuple[List[Node], List[CallRelationship]]:
+    try:
+        logger.debug(f"Vue analysis for {file_path}")
+        analyzer = TreeSitterVueAnalyzer(file_path, content, repo_path)
+        analyzer.analyze()
+        logger.debug(
+            f"Found {len(analyzer.nodes)} nodes, {len(analyzer.call_relationships)} relationships"
+        )
+        return analyzer.nodes, analyzer.call_relationships
+    except Exception as e:
+        logger.error(f"Error in Vue analysis for {file_path}: {e}", exc_info=True)
+        return [], []
