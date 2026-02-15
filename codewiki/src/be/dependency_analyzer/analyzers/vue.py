@@ -2,7 +2,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from pathlib import Path
 
 from tree_sitter import Parser
@@ -11,6 +11,8 @@ from tree_sitter_language_pack import get_language
 from codewiki.src.be.dependency_analyzer.models.core import Node, CallRelationship
 
 logger = logging.getLogger(__name__)
+
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_$][a-zA-Z0-9_$]*$")
 
 
 @dataclass
@@ -33,13 +35,6 @@ class TreeSitterVueAnalyzer:
         "shallowRef", "shallowReactive", "toRef", "toRefs",
     }
 
-    VUE_LIFECYCLE_HOOKS = {
-        "onMounted", "onUpdated", "onUnmounted",
-        "onBeforeMount", "onBeforeUpdate", "onBeforeUnmount",
-        "onActivated", "onDeactivated", "onErrorCaptured",
-        "onRenderTracked", "onRenderTriggered", "onServerPrefetch",
-    }
-
     VUE_MACROS = {"defineProps", "defineEmits", "defineExpose", "defineSlots", "defineModel", "withDefaults"}
 
     def __init__(self, file_path: str, content: str, repo_path: str = None):
@@ -51,12 +46,17 @@ class TreeSitterVueAnalyzer:
 
         try:
             self.vue_language = get_language("vue")
-            self.parser = Parser()
-            self.parser.language = self.vue_language
-            self.tree = self.parser.parse(bytes(content, "utf8"))
+            self.parser = Parser(self.vue_language)
         except Exception as e:
             logger.error(f"Failed to initialize Vue parser: {e}")
             self.parser = None
+            self.tree = None
+            return
+
+        try:
+            self.tree = self.parser.parse(bytes(content, "utf8"))
+        except Exception as e:
+            logger.error(f"Failed to parse Vue content for {file_path}: {e}")
             self.tree = None
 
     def _extract_script_block(self) -> Optional[ScriptBlock]:
@@ -125,46 +125,43 @@ class TreeSitterVueAnalyzer:
         if self.tree is None:
             return
 
-        try:
-            script_block = self._extract_script_block()
-            template_node = self._extract_template_node()
+        script_block = self._extract_script_block()
+        template_node = self._extract_template_node()
 
-            # Nothing to analyze if there's no script and no template
-            if not script_block and not template_node:
-                return
+        # Nothing to analyze if there's no script and no template
+        if not script_block and not template_node:
+            return
 
-            module_path = self._get_module_path()
-            component_id = module_path
+        component_id = self._get_module_path()
 
-            # Stage 1: Analyze script block with existing TS/JS analyzer
-            if script_block and script_block.content.strip():
-                self._analyze_script(script_block)
+        # Stage 1: Analyze script block with existing TS/JS analyzer
+        if script_block and script_block.content.strip():
+            self._analyze_script(script_block)
 
-            # Stage 2: Analyze template for component refs, events, bindings
-            if template_node:
-                self._analyze_template(template_node, component_id)
+        # Stage 2: Analyze template for component refs, events, bindings
+        if template_node:
+            self._analyze_template(template_node, component_id)
 
-            # Create top-level vue_component node
-            self._create_component_node(component_id, module_path)
+        # Create top-level vue_component node
+        self._create_component_node(component_id)
 
-            # Post-process: enrich Vue-specific metadata
-            self._enrich_vue_metadata()
-
-        except Exception as e:
-            logger.error(f"Error analyzing Vue file {self.file_path}: {e}", exc_info=True)
+        # Post-process: enrich Vue-specific metadata
+        self._enrich_vue_metadata()
 
     def _analyze_script(self, script_block: ScriptBlock) -> None:
-        use_ts = script_block.lang in ("ts", "tsx") or script_block.is_setup
+        use_ts = script_block.lang in ("ts", "tsx")
 
         if use_ts:
             from codewiki.src.be.dependency_analyzer.analyzers.typescript import TreeSitterTSAnalyzer
+            synthetic_path = str(self.file_path).replace(".vue", ".ts")
             sub_analyzer = TreeSitterTSAnalyzer(
-                str(self.file_path), script_block.content, self.repo_path
+                synthetic_path, script_block.content, self.repo_path
             )
         else:
             from codewiki.src.be.dependency_analyzer.analyzers.javascript import TreeSitterJSAnalyzer
+            synthetic_path = str(self.file_path).replace(".vue", ".js")
             sub_analyzer = TreeSitterJSAnalyzer(
-                str(self.file_path), script_block.content, self.repo_path
+                synthetic_path, script_block.content, self.repo_path
             )
 
         sub_analyzer.analyze()
@@ -182,15 +179,19 @@ class TreeSitterVueAnalyzer:
         self.call_relationships.extend(sub_analyzer.call_relationships)
 
     def _get_module_path(self) -> str:
-        rel_path = os.path.relpath(str(self.file_path), self.repo_path)
-        for ext in [".vue"]:
-            if rel_path.endswith(ext):
-                rel_path = rel_path[: -len(ext)]
-                break
+        try:
+            rel_path = os.path.relpath(str(self.file_path), self.repo_path)
+        except ValueError:
+            rel_path = str(self.file_path)
+        if rel_path.endswith(".vue"):
+            rel_path = rel_path[:-4]
         return rel_path.replace("/", ".").replace("\\", ".")
 
-    def _create_component_node(self, component_id: str, module_path: str) -> None:
-        rel_path = os.path.relpath(str(self.file_path), self.repo_path)
+    def _create_component_node(self, component_id: str) -> None:
+        try:
+            rel_path = os.path.relpath(str(self.file_path), self.repo_path)
+        except ValueError:
+            rel_path = str(self.file_path)
         self.nodes.insert(
             0,
             Node(
@@ -275,7 +276,7 @@ class TreeSitterVueAnalyzer:
             return
 
         # Simple identifier check: no spaces, dots, parens, brackets, operators
-        is_simple_identifier = bool(re.match(r"^[a-zA-Z_$][a-zA-Z0-9_$]*$", value))
+        is_simple_identifier = bool(_IDENTIFIER_RE.match(value))
 
         if directive_name == "@" and is_simple_identifier:
             # Event handler: @click="handleClick"
@@ -302,7 +303,7 @@ class TreeSitterVueAnalyzer:
         for child in node.children:
             if child.type == "raw_text":
                 text = child.text.decode("utf8").strip()
-                if re.match(r"^[a-zA-Z_$][a-zA-Z0-9_$]*$", text):
+                if _IDENTIFIER_RE.match(text):
                     self.call_relationships.append(
                         CallRelationship(
                             caller=component_id,
@@ -343,7 +344,7 @@ class TreeSitterVueAnalyzer:
 
 def analyze_vue_file(
     file_path: str, content: str, repo_path: str = None
-) -> Tuple[List[Node], List[CallRelationship]]:
+) -> tuple[List[Node], List[CallRelationship]]:
     try:
         logger.debug(f"Vue analysis for {file_path}")
         analyzer = TreeSitterVueAnalyzer(file_path, content, repo_path)

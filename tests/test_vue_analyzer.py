@@ -1,4 +1,3 @@
-import pytest
 from codewiki.src.be.dependency_analyzer.analyzers.vue import TreeSitterVueAnalyzer, analyze_vue_file
 
 
@@ -145,6 +144,15 @@ def test_template_event_handlers():
     # @click="handleClick" should create a calls relationship
     event_rels = [r for r in rels if r.callee.endswith("handleClick") and r.caller.endswith("App")]
     assert len(event_rels) >= 1
+
+
+def test_template_prop_bindings():
+    analyzer = TreeSitterVueAnalyzer("/repo/src/App.vue", TEMPLATE_SFC, "/repo")
+    analyzer.analyze()
+    rels = analyzer.call_relationships
+    ref_rels = [r for r in rels if r.relationship_type == "references"]
+    ref_names = {r.callee for r in ref_rels}
+    assert "pageTitle" in ref_names
 
 
 def test_template_interpolations():

@@ -295,11 +295,7 @@ class AnalysisService:
         return result
 
     def _filter_supported_languages(self, code_files: List[Dict]) -> List[Dict]:
-        """
-        Filter code files to only include supported languages.
-
-        Supports Python, JavaScript, TypeScript, Java, C#, C, C++, PHP, and Go.
-        """
+        """Filter code files to only include supported languages."""
         return [
             file_info
             for file_info in code_files
