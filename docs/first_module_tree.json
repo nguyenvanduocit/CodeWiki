@@ -1,0 +1,133 @@
+{
+    "CLI Application": {
+        "path": "codewiki/cli",
+        "components": [
+            "codewiki.cli.adapters.doc_generator.CLIDocumentationGenerator",
+            "codewiki.cli.config_manager.ConfigManager",
+            "codewiki.cli.git_manager.GitManager",
+            "codewiki.cli.html_generator.HTMLGenerator",
+            "codewiki.cli.models.config.AgentInstructions",
+            "codewiki.cli.models.config.Configuration",
+            "codewiki.cli.models.job.JobStatistics",
+            "codewiki.cli.models.job.GenerationOptions",
+            "codewiki.cli.models.job.LLMConfig",
+            "codewiki.cli.models.job.JobStatus",
+            "codewiki.cli.models.job.DocumentationJob",
+            "codewiki.cli.utils.logging.CLILogger",
+            "codewiki.cli.utils.progress.ModuleProgressBar",
+            "codewiki.cli.utils.progress.ProgressTracker"
+        ],
+        "children": {}
+    },
+    "Dependency Analyzer": {
+        "path": "codewiki/src/be/dependency_analyzer",
+        "components": [
+            "codewiki.src.be.dependency_analyzer.analysis.analysis_service.AnalysisService",
+            "codewiki.src.be.dependency_analyzer.analysis.call_graph_analyzer.CallGraphAnalyzer",
+            "codewiki.src.be.dependency_analyzer.analysis.repo_analyzer.RepoAnalyzer",
+            "codewiki.src.be.dependency_analyzer.analyzers.c.TreeSitterCAnalyzer",
+            "codewiki.src.be.dependency_analyzer.analyzers.cpp.TreeSitterCppAnalyzer",
+            "codewiki.src.be.dependency_analyzer.analyzers.csharp.TreeSitterCSharpAnalyzer",
+            "codewiki.src.be.dependency_analyzer.analyzers.golang.GoAnalyzer",
+            "codewiki.src.be.dependency_analyzer.analyzers.java.TreeSitterJavaAnalyzer",
+            "codewiki.src.be.dependency_analyzer.analyzers.javascript.TreeSitterJSAnalyzer",
+            "codewiki.src.be.dependency_analyzer.analyzers.php.NamespaceResolver",
+            "codewiki.src.be.dependency_analyzer.analyzers.php.TreeSitterPHPAnalyzer",
+            "codewiki.src.be.dependency_analyzer.analyzers.python.PythonASTAnalyzer",
+            "codewiki.src.be.dependency_analyzer.analyzers.typescript.TreeSitterTSAnalyzer",
+            "codewiki.src.be.dependency_analyzer.ast_parser.DependencyParser",
+            "codewiki.src.be.dependency_analyzer.dependency_graphs_builder.DependencyGraphBuilder",
+            "codewiki.src.be.dependency_analyzer.models.analysis.NodeSelection",
+            "codewiki.src.be.dependency_analyzer.models.analysis.AnalysisResult",
+            "codewiki.src.be.dependency_analyzer.models.core.Node",
+            "codewiki.src.be.dependency_analyzer.models.core.Repository",
+            "codewiki.src.be.dependency_analyzer.models.core.CallRelationship",
+            "codewiki.src.be.dependency_analyzer.utils.logging_config.ColoredFormatter"
+        ],
+        "children": {
+            "Data Models": {
+                "components": [
+                    "codewiki.src.be.dependency_analyzer.models.core.Node",
+                    "codewiki.src.be.dependency_analyzer.models.core.Repository",
+                    "codewiki.src.be.dependency_analyzer.models.core.CallRelationship",
+                    "codewiki.src.be.dependency_analyzer.models.analysis.NodeSelection",
+                    "codewiki.src.be.dependency_analyzer.models.analysis.AnalysisResult"
+                ],
+                "children": {}
+            },
+            "Language Analyzers": {
+                "components": [
+                    "codewiki.src.be.dependency_analyzer.analyzers.c.TreeSitterCAnalyzer",
+                    "codewiki.src.be.dependency_analyzer.analyzers.cpp.TreeSitterCppAnalyzer",
+                    "codewiki.src.be.dependency_analyzer.analyzers.csharp.TreeSitterCSharpAnalyzer",
+                    "codewiki.src.be.dependency_analyzer.analyzers.golang.GoAnalyzer",
+                    "codewiki.src.be.dependency_analyzer.analyzers.java.TreeSitterJavaAnalyzer",
+                    "codewiki.src.be.dependency_analyzer.analyzers.javascript.TreeSitterJSAnalyzer",
+                    "codewiki.src.be.dependency_analyzer.analyzers.php.NamespaceResolver",
+                    "codewiki.src.be.dependency_analyzer.analyzers.php.TreeSitterPHPAnalyzer",
+                    "codewiki.src.be.dependency_analyzer.analyzers.python.PythonASTAnalyzer",
+                    "codewiki.src.be.dependency_analyzer.analyzers.typescript.TreeSitterTSAnalyzer"
+                ],
+                "children": {}
+            },
+            "Analysis Services": {
+                "components": [
+                    "codewiki.src.be.dependency_analyzer.analysis.analysis_service.AnalysisService",
+                    "codewiki.src.be.dependency_analyzer.analysis.call_graph_analyzer.CallGraphAnalyzer",
+                    "codewiki.src.be.dependency_analyzer.analysis.repo_analyzer.RepoAnalyzer"
+                ],
+                "children": {}
+            },
+            "Core Graph Processing": {
+                "components": [
+                    "codewiki.src.be.dependency_analyzer.ast_parser.DependencyParser",
+                    "codewiki.src.be.dependency_analyzer.dependency_graphs_builder.DependencyGraphBuilder"
+                ],
+                "children": {}
+            },
+            "Logging Utilities": {
+                "components": [
+                    "codewiki.src.be.dependency_analyzer.utils.logging_config.ColoredFormatter"
+                ],
+                "children": {}
+            }
+        }
+    },
+    "Agent Backend": {
+        "path": "codewiki/src/be",
+        "components": [
+            "codewiki.src.be.agent_orchestrator.AgentOrchestrator",
+            "codewiki.src.be.agent_tools.deps.CodeWikiDeps",
+            "codewiki.src.be.agent_tools.str_replace_editor.EditTool",
+            "codewiki.src.be.agent_tools.str_replace_editor.Filemap",
+            "codewiki.src.be.agent_tools.str_replace_editor.WindowExpander",
+            "codewiki.src.be.documentation_generator.DocumentationGenerator",
+            "codewiki.src.be.llm_services.AutoResponseFixOpenAIModel"
+        ],
+        "children": {}
+    },
+    "Web Frontend": {
+        "path": "codewiki/src/fe",
+        "components": [
+            "codewiki.src.fe.background_worker.BackgroundWorker",
+            "codewiki.src.fe.cache_manager.CacheManager",
+            "codewiki.src.fe.config.WebAppConfig",
+            "codewiki.src.fe.github_processor.GitHubRepoProcessor",
+            "codewiki.src.fe.models.CacheEntry",
+            "codewiki.src.fe.models.JobStatusResponse",
+            "codewiki.src.fe.models.JobStatus",
+            "codewiki.src.fe.models.RepositorySubmission",
+            "codewiki.src.fe.routes.WebRoutes",
+            "codewiki.src.fe.template_utils.StringTemplateLoader"
+        ],
+        "children": {}
+    },
+    "Shared Utilities": {
+        "path": "codewiki/src",
+        "components": [
+            "codewiki.src.config.Config",
+            "codewiki.src.utils.FileManager"
+        ],
+        "children": {}
+    }
+}

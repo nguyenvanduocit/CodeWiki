@@ -1,0 +1,45 @@
+{
+    "generation_info": {
+        "timestamp": "2026-02-12T17:49:17.089057",
+        "main_model": "glm-5",
+        "generator_version": "1.0.1",
+        "repo_path": "/Users/firegroup/tmp/CodeWiki",
+        "commit_id": null
+    },
+    "statistics": {
+        "total_components": 218,
+        "leaf_nodes": 74,
+        "max_depth": 5
+    },
+    "files_generated": [
+        "overview.md",
+        "module_tree.json",
+        "first_module_tree.json",
+        "Web Frontend - Web Routes.md",
+        "Dependency Analyzer.md",
+        "Analysis Services.md",
+        "Data Models.md",
+        "Component Extraction.md",
+        "Web Frontend.md",
+        "Logging Utilities.md",
+        "adapters.md",
+        "CLI Application.md",
+        "Web Frontend - GitHub Processing.md",
+        "Web Frontend - Template Utilities.md",
+        "Data Models - Analysis Models.md",
+        "Graph Building.md",
+        "data_models_core_models.md",
+        "Graph Algorithms.md",
+        "Core Graph Processing.md",
+        "Shared Utilities.md",
+        "Web_Frontend.md",
+        "Language Analyzers.md",
+        "Web Frontend - Cache Management.md",
+        "Agent Backend.md",
+        "config_management.md",
+        "Web Frontend - Background Processing.md",
+        "dependency_analyzer.md",
+        "shared_utilities.md",
+        "CODEBASE_MAP.md"
+    ]
+}
