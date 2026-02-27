@@ -166,11 +166,19 @@ class TreeSitterVueAnalyzer:
 
         sub_analyzer.analyze()
 
-        # Fix line offsets — map back to original .vue file positions
+        # Fix line offsets and file paths — map back to original .vue file
         offset = script_block.start_line
+        original_path = str(self.file_path)
+        try:
+            original_rel_path = os.path.relpath(original_path, self.repo_path)
+        except ValueError:
+            original_rel_path = original_path
+
         for node in sub_analyzer.nodes:
             node.start_line += offset
             node.end_line += offset
+            node.file_path = original_path
+            node.relative_path = original_rel_path
         for rel in sub_analyzer.call_relationships:
             if rel.call_line is not None:
                 rel.call_line += offset
