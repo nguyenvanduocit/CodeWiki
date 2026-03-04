@@ -5,6 +5,7 @@ Provides drop-in replacements for LLM calls and module processing
 using Claude Code CLI via the claude-agent-sdk package.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -20,17 +21,17 @@ from claude_agent_sdk import (
 
 from codewiki.src.config import Config, MODULE_TREE_FILENAME
 from codewiki.src.be.prompt_template import (
-    LEAF_SYSTEM_PROMPT,
-    SYSTEM_PROMPT,
-    EXTENSION_TO_LANGUAGE,
+    format_system_prompt,
+    format_leaf_system_prompt,
+    format_component_metrics,
+    STRUCTURE_ANALYSIS_PROMPT,
+    FLOW_ANALYSIS_PROMPT,
+    API_ANALYSIS_PROMPT,
+    COMPOSER_PROMPT,
+    VERIFIER_PROMPT,
+    CLAUDE_CODE_TOOLS_SECTION,
 )
-from codewiki.src.be.cluster_modules import (
-    cluster_modules as _original_cluster_modules,
-    format_potential_core_components,
-)
-from codewiki.src.be.llm_services import call_llm as _original_call_llm
-from codewiki.src.be.prompt_template import format_cluster_prompt
-from codewiki.src.be.utils import count_tokens, is_complex_module
+from codewiki.src.be.utils import is_complex_module
 from codewiki.src.utils import file_manager
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ async def agent_sdk_call_llm(
     options = ClaudeAgentOptions(
         max_turns=1,
         permission_mode="default",
-        model=model or "sonnet",
+        model=model or config.main_model or "opus",
         system_prompt=("You are an AI assistant helping with code documentation. "
                        "Respond directly to the prompt without using any tools."),
     )
@@ -86,16 +87,17 @@ async def agent_sdk_process_module(
     module_path: List[str],
     working_dir: str,
     config: Config,
-    module_tree: Dict[str, Any] = None,
+    model: Optional[str] = None,
+    dependency_context: str = "",
 ) -> Dict[str, Any]:
     """
-    Replacement for AgentOrchestrator.process_module() using Claude Agent SDK.
+    Process a module using Claude Agent SDK.
 
     Claude Code gets full tool access (Read, Write, Edit, Grep, Glob) and
     reads source files directly from the repo, then writes docs to working_dir.
     """
     module_tree_path = os.path.join(working_dir, MODULE_TREE_FILENAME)
-    module_tree = file_manager.load_json(module_tree_path)
+    module_tree = file_manager.load_json(module_tree_path) or {}
 
     # Skip if docs already exist
     docs_path = os.path.join(working_dir, f"{module_name}.md")
@@ -113,50 +115,31 @@ async def agent_sdk_process_module(
 
     component_list = "\n".join(component_lines) if component_lines else "(no components)"
 
-    # Build system prompt
+    # Build system prompt using format functions (handles tool section automatically)
     custom_instructions = config.get_prompt_addition() if config else ""
-    custom_section = ""
-    if custom_instructions:
-        custom_section = f"\n\n<CUSTOM_INSTRUCTIONS>\n{custom_instructions}\n</CUSTOM_INSTRUCTIONS>"
-
     if is_complex_module(components, core_component_ids):
-        system_prompt_template = SYSTEM_PROMPT
+        system_prompt = format_system_prompt(module_name, custom_instructions, use_claude_code_tools=True)
     else:
-        system_prompt_template = LEAF_SYSTEM_PROMPT
-
-    # Adapt system prompt: replace tool references since Claude Code has its own tools
-    system_prompt = system_prompt_template.format(
-        module_name=module_name,
-        custom_instructions=custom_section,
-    )
-    # Replace tool-specific sections with Claude Code instructions.
-    # Both complex (3-tool) and leaf (2-tool) prompts share the same replacement.
-    claude_code_tools = (
-        "<AVAILABLE_TOOLS>\n"
-        "You have full access to Read, Write, Edit, Grep, and Glob tools.\n"
-        "- Use Read to examine source code files\n"
-        "- Use Write to create documentation files\n"
-        "- Use Edit to modify documentation files\n"
-        "- Use Grep/Glob to explore the codebase\n"
-        "</AVAILABLE_TOOLS>"
-    )
-    for old_tools in [
-        "<AVAILABLE_TOOLS>\n"
-        "- `str_replace_editor`: File system operations for creating and editing documentation files\n"
-        "- `read_code_components`: Explore additional code dependencies not included in the provided components\n"
-        "- `generate_sub_module_documentation`: Generate detailed documentation for individual sub-modules via sub-agents\n"
-        "</AVAILABLE_TOOLS>",
-        "<AVAILABLE_TOOLS>\n"
-        "- `str_replace_editor`: File system operations for creating and editing documentation files\n"
-        "- `read_code_components`: Explore additional code dependencies not included in the provided components\n"
-        "</AVAILABLE_TOOLS>",
-    ]:
-        system_prompt = system_prompt.replace(old_tools, claude_code_tools)
+        system_prompt = format_leaf_system_prompt(module_name, custom_instructions, use_claude_code_tools=True)
 
     # Format module tree for context
     module_tree_text = json.dumps(module_tree, indent=2)
 
-    user_prompt = f"""Generate comprehensive documentation for the **{module_name}** module.
+    # Build analysis metrics for the prompt
+    metrics_text = format_component_metrics(core_component_ids, components)
+    analysis_metrics_section = ""
+    if metrics_text:
+        analysis_metrics_section = f"""
+<ANALYSIS_METRICS>
+{metrics_text}
+</ANALYSIS_METRICS>
+"""
+
+    dependency_context_section = ""
+    if dependency_context:
+        dependency_context_section = f"\n{dependency_context}\n"
+
+    user_prompt = f"""Generate comprehensive, evidence-based documentation for the **{module_name}** module.
 
 <REPOSITORY_PATH>
 {os.path.abspath(config.repo_path)}
@@ -173,23 +156,24 @@ async def agent_sdk_process_module(
 <CORE_COMPONENTS>
 {component_list}
 </CORE_COMPONENTS>
-
+{analysis_metrics_section}{dependency_context_section}
 <GENERATED_ARTIFACTS>
-Pre-computed analysis artifacts are available in the output directory. Read them for deeper architectural context:
+Pre-computed analysis artifacts are available in the output directory:
 - `codebase_map.json`: Dependency graph summary with per-component metrics (PageRank, betweenness, complexity, community IDs), circular dependencies, temporal couplings, and architectural violations
-- `graph.html`: Interactive D3.js visualization of the dependency graph with community clusters
-- `temp/dependency_graphs/`: Full dependency graph JSON with complete component data (source code, all metrics, dependency edges)
+- `temp/dependency_graphs/`: Full dependency graph JSON with complete component data
 - `module_tree.json`: Hierarchical module decomposition tree
 </GENERATED_ARTIFACTS>
 
 Instructions:
-1. Read the source files for the core components listed above
-2. Read `codebase_map.json` in the output directory to understand architectural metrics and dependencies
-3. Analyze the code structure, dependencies, and functionality
+1. Read `codebase_map.json` in the output directory FIRST to understand architectural metrics and hub components
+2. Read the source files for all core components listed above
+3. Verify every claim against actual code — if a name suggests X but code does Y, document Y
 4. Create `{module_name}.md` in the output directory with comprehensive documentation
-5. Include Mermaid diagrams for architecture, dependencies, and data flow
-6. All documentation files should be saved in: {os.path.abspath(working_dir)}
-7. Reference other modules by linking to `[module_name](module_name.md)` — all docs are in the same flat directory
+5. Include evidence: reference components as `path/file.ext:line_number` throughout the prose
+6. Include Mermaid diagrams: at minimum an architecture diagram and one sequence/flow diagram
+7. Include sections for: design rationale, failure modes, change impact/blast radius
+8. All documentation files should be saved in: {os.path.abspath(working_dir)}
+9. Reference other modules by linking to `[module_name](module_name.md)` — all docs are in the same flat directory
 """
 
     logger.info(f"Agent SDK processing module: {module_name}")
@@ -198,7 +182,7 @@ Instructions:
         permission_mode="bypassPermissions",
         cwd=os.path.abspath(config.repo_path),
         system_prompt=system_prompt,
-        model="sonnet",
+        model=model or config.main_model or "opus",
     )
 
     model_name = None
@@ -219,89 +203,297 @@ Instructions:
 
     # Reload module tree (Claude Code may not have modified it, but docs should exist now)
     if os.path.exists(module_tree_path):
-        module_tree = file_manager.load_json(module_tree_path)
+        module_tree = file_manager.load_json(module_tree_path) or {}
 
     return module_tree
 
 
-async def agent_sdk_cluster(
-    leaf_nodes: List[str],
-    components: Dict[str, Any],
+async def _run_analysis_agent(
+    agent_name: str,
+    prompt_template: str,
+    module_name: str,
+    repo_path: str,
+    output_path: str,
+    component_list: str,
     config: Config,
-    current_module_tree: dict[str, Any] = {},
-    current_module_name: str = None,
-    current_module_path: List[str] = [],
-) -> Dict[str, Any]:
-    """
-    Replacement for cluster_modules() using Claude Agent SDK for LLM calls.
-
-    Reuses the existing clustering logic (parsing, recursion, module tree building)
-    but replaces call_llm with agent_sdk_call_llm.
-    """
-    potential_core_components, potential_core_components_with_code = (
-        format_potential_core_components(leaf_nodes, components)
+    dependency_context: str = "",
+) -> str:
+    """Run a single analysis agent and return the output file path."""
+    system_prompt = prompt_template.format(
+        module_name=module_name,
+        output_path=output_path,
+        tools_section=CLAUDE_CODE_TOOLS_SECTION,
     )
 
-    if count_tokens(potential_core_components_with_code) <= config.max_token_per_module:
-        logger.debug(
-            f"Skipping clustering for {current_module_name} because the potential core "
-            f"components are too few: {count_tokens(potential_core_components_with_code)} tokens"
-        )
-        return {}
+    dep_context_section = ""
+    if dependency_context:
+        dep_context_section = f"\n{dependency_context}\n"
 
-    prompt = format_cluster_prompt(potential_core_components, current_module_tree, current_module_name)
-    response = await agent_sdk_call_llm(prompt, config, model="sonnet")
+    user_prompt = f"""Analyze the **{module_name}** module.
 
-    # Parse the response (same logic as cluster_modules)
-    try:
-        if "<GROUPED_COMPONENTS>" not in response or "</GROUPED_COMPONENTS>" not in response:
-            logger.error(f"Invalid LLM response format - missing component tags: {response[:200]}...")
-            return {}
+<REPOSITORY_PATH>
+{os.path.abspath(repo_path)}
+</REPOSITORY_PATH>
 
-        response_content = response.split("<GROUPED_COMPONENTS>")[1].split("</GROUPED_COMPONENTS>")[0]
-        module_tree = json.loads(response_content)
+<CORE_COMPONENTS>
+{component_list}
+</CORE_COMPONENTS>
+{dep_context_section}
+Write your analysis to: {os.path.abspath(output_path)}
+"""
 
-        if not isinstance(module_tree, dict):
-            logger.error(f"Invalid module tree format - expected dict, got {type(module_tree)}")
-            return {}
+    logger.info(f"Deep analysis: running {agent_name} for {module_name}")
 
-    except Exception as e:
-        logger.error(f"Failed to parse LLM response: {e}. Response: {response[:200]}...")
-        return {}
+    options = ClaudeAgentOptions(
+        permission_mode="bypassPermissions",
+        cwd=os.path.abspath(repo_path),
+        system_prompt=system_prompt,
+        model=config.main_model or "opus",
+    )
 
-    if len(module_tree) <= 1:
-        logger.debug(
-            f"Skipping clustering for {current_module_name} because the module tree "
-            f"is too small: {len(module_tree)} modules"
-        )
-        return {}
+    async for message in query(prompt=user_prompt, options=options):
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    logger.debug(f"{agent_name}: {block.text[:150]}...")
+        elif isinstance(message, ResultMessage):
+            if message.is_error:
+                logger.error(f"{agent_name} error for {module_name}: {message.result}")
+                raise RuntimeError(f"{agent_name} failed: {message.result}")
+            logger.info(f"{agent_name} completed for {module_name} (turns={message.num_turns}, cost=${message.total_cost_usd or 0:.4f})")
 
-    if current_module_tree == {}:
-        current_module_tree = module_tree
-    else:
-        value = current_module_tree
-        for key in current_module_path:
-            value = value[key]["children"]
-        for mod_name, mod_info in module_tree.items():
-            del mod_info["path"]
-            value[mod_name] = mod_info
+    return output_path
 
-    for mod_name, mod_info in module_tree.items():
-        sub_leaf_nodes = mod_info.get("components", [])
 
-        valid_sub_leaf_nodes = [n for n in sub_leaf_nodes if n in components]
-        for n in sub_leaf_nodes:
-            if n not in components:
-                logger.warning(
-                    f"Skipping invalid sub leaf node '{n}' in module '{mod_name}' - not found in components"
-                )
+async def agent_sdk_process_module_deep(
+    module_name: str,
+    components: Dict[str, Any],
+    core_component_ids: List[str],
+    module_path: List[str],
+    working_dir: str,
+    config: Config,
+    model: Optional[str] = None,
+    dependency_context: str = "",
+) -> Dict[str, Any]:
+    """
+    Process a module using deep multi-agent analysis pipeline.
 
-        current_module_path.append(mod_name)
-        mod_info["children"] = {}
-        mod_info["children"] = await agent_sdk_cluster(
-            valid_sub_leaf_nodes, components, config,
-            current_module_tree, mod_name, current_module_path,
-        )
-        current_module_path.pop()
+    Pipeline: 3 parallel analysis agents -> Composer -> Verifier -> (optional revision)
+    """
+    module_tree_path = os.path.join(working_dir, MODULE_TREE_FILENAME)
+    module_tree = file_manager.load_json(module_tree_path) or {}
+
+    # Skip if docs already exist
+    docs_path = os.path.join(working_dir, f"{module_name}.md")
+    if os.path.exists(docs_path):
+        logger.info(f"Module docs already exist at {docs_path}")
+        return module_tree
+
+    # Build component list
+    component_lines = []
+    for comp_id in core_component_ids:
+        if comp_id not in components:
+            continue
+        comp = components[comp_id]
+        component_lines.append(f"- {comp_id} (file: {comp.relative_path})")
+    component_list = "\n".join(component_lines) if component_lines else "(no components)"
+
+    # Create temp directory for analysis files
+    analysis_dir = os.path.join(working_dir, "temp", f"_analysis_{module_name}")
+    os.makedirs(analysis_dir, exist_ok=True)
+
+    structure_path = os.path.join(analysis_dir, "structure_analysis.md")
+    flow_path = os.path.join(analysis_dir, "flow_analysis.md")
+    api_path = os.path.join(analysis_dir, "api_analysis.md")
+
+    # Phase 1: Run 3 analysis agents concurrently
+    logger.info(f"Deep analysis Phase 1: running 3 analysis agents for {module_name}")
+
+    analysis_tasks = [
+        _run_analysis_agent(
+            "StructureAnalyst", STRUCTURE_ANALYSIS_PROMPT,
+            module_name, config.repo_path, structure_path, component_list, config,
+            dependency_context=dependency_context,
+        ),
+        _run_analysis_agent(
+            "FlowAnalyst", FLOW_ANALYSIS_PROMPT,
+            module_name, config.repo_path, flow_path, component_list, config,
+            dependency_context=dependency_context,
+        ),
+        _run_analysis_agent(
+            "APIAnalyst", API_ANALYSIS_PROMPT,
+            module_name, config.repo_path, api_path, component_list, config,
+            dependency_context=dependency_context,
+        ),
+    ]
+
+    results = await asyncio.gather(*analysis_tasks, return_exceptions=True)
+
+    # Log any failures but continue with available analyses
+    for i, result in enumerate(results):
+        agent_names = ["StructureAnalyst", "FlowAnalyst", "APIAnalyst"]
+        if isinstance(result, Exception):
+            logger.error(f"{agent_names[i]} failed for {module_name}: {result}")
+
+    successful = sum(1 for r in results if not isinstance(r, Exception))
+    if successful == 0:
+        logger.warning(f"All 3 analysis agents failed for {module_name}. Composer will work from source code only.")
+
+    # Phase 2: Composer agent synthesizes analysis into final doc
+    logger.info(f"Deep analysis Phase 2: composing documentation for {module_name}")
+
+    composer_system = COMPOSER_PROMPT.format(
+        module_name=module_name,
+        output_path=docs_path,
+        tools_section=CLAUDE_CODE_TOOLS_SECTION,
+    )
+
+    # Build list of available analysis files
+    available_analyses = []
+    for path, name in [(structure_path, "Structure"), (flow_path, "Flow"), (api_path, "API")]:
+        if os.path.exists(path):
+            available_analyses.append(f"- {name} analysis: {os.path.abspath(path)}")
+    analyses_list = "\n".join(available_analyses) if available_analyses else "(no analyses available)"
+
+    # Build analysis metrics
+    metrics_text = format_component_metrics(core_component_ids, components)
+    metrics_section = ""
+    if metrics_text:
+        metrics_section = f"\n<ANALYSIS_METRICS>\n{metrics_text}\n</ANALYSIS_METRICS>\n"
+
+    module_tree_text = json.dumps(module_tree, indent=2)
+
+    dependency_context_section = ""
+    if dependency_context:
+        dependency_context_section = f"\n{dependency_context}\n"
+
+    composer_user = f"""Synthesize comprehensive documentation for the **{module_name}** module.
+
+<REPOSITORY_PATH>
+{os.path.abspath(config.repo_path)}
+</REPOSITORY_PATH>
+
+<OUTPUT_PATH>
+{os.path.abspath(docs_path)}
+</OUTPUT_PATH>
+
+<MODULE_TREE>
+{module_tree_text}
+</MODULE_TREE>
+
+<ANALYSIS_FILES>
+{analyses_list}
+</ANALYSIS_FILES>
+
+<CORE_COMPONENTS>
+{component_list}
+</CORE_COMPONENTS>
+{metrics_section}{dependency_context_section}
+Instructions:
+1. Read ALL analysis files listed above
+2. Read the source code for core components to verify claims
+3. Synthesize into one comprehensive `{module_name}.md` at the output path
+4. Do NOT concatenate — create a coherent narrative
+5. Resolve conflicts between analyses by reading source code
+6. Include evidence (`path:line`) for every factual claim
+7. Reference other modules: `[module_name](module_name.md)`
+"""
+
+    options = ClaudeAgentOptions(
+        permission_mode="bypassPermissions",
+        cwd=os.path.abspath(config.repo_path),
+        system_prompt=composer_system,
+        model=model or config.main_model or "opus",
+    )
+
+    async for message in query(prompt=composer_user, options=options):
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    logger.debug(f"Composer: {block.text[:150]}...")
+        elif isinstance(message, ResultMessage):
+            if message.is_error:
+                logger.error(f"Composer error for {module_name}: {message.result}")
+                raise RuntimeError(f"Composer failed for {module_name}: {message.result}")
+            logger.info(f"Composer completed for {module_name} (turns={message.num_turns}, cost=${message.total_cost_usd or 0:.4f})")
+
+    # Phase 3: Verifier checks quality (simple LLM call, no tools)
+    if os.path.exists(docs_path):
+        logger.info(f"Deep analysis Phase 3: verifying documentation for {module_name}")
+        try:
+            doc_content = file_manager.load_text(docs_path)
+            verifier_prompt = VERIFIER_PROMPT.format(
+                module_name=module_name,
+                documentation_content=doc_content[:50000],  # Truncate if too long
+                component_list=component_list,
+            )
+
+            verification = await agent_sdk_call_llm(verifier_prompt, config)
+
+            verification_lower = verification.lower()
+
+            if "<needs_revision>true</needs_revision>" in verification_lower:
+                logger.info(f"Verifier requested revision for {module_name}")
+                # Extract revision instructions (case-insensitive)
+                ri_start_tag = "<revision_instructions>"
+                ri_end_tag = "</revision_instructions>"
+                if ri_start_tag in verification_lower:
+                    ri_start = verification_lower.index(ri_start_tag) + len(ri_start_tag)
+                    ri_end = verification_lower.index(ri_end_tag)
+                    revision_text = verification[ri_start:ri_end].strip()
+
+                    # One revision pass: send instructions back to a revision agent
+                    revision_system = f"""You are a documentation editor. Revise the documentation for **{module_name}** based on the verifier's feedback.
+
+{CLAUDE_CODE_TOOLS_SECTION}
+
+Read the existing documentation, apply the revision instructions, and write the improved version back to the same file."""
+
+                    revision_user = f"""Revise the documentation at {os.path.abspath(docs_path)}
+
+<REVISION_INSTRUCTIONS>
+{revision_text}
+</REVISION_INSTRUCTIONS>
+
+<REPOSITORY_PATH>
+{os.path.abspath(config.repo_path)}
+</REPOSITORY_PATH>
+
+Read the existing doc, verify claims against source code, apply the revisions, and overwrite the file.
+"""
+                    revision_options = ClaudeAgentOptions(
+                        permission_mode="bypassPermissions",
+                        cwd=os.path.abspath(config.repo_path),
+                        system_prompt=revision_system,
+                        model=model or config.main_model or "opus",
+                    )
+
+                    async for message in query(prompt=revision_user, options=revision_options):
+                        if isinstance(message, ResultMessage):
+                            if message.is_error:
+                                logger.warning(f"Revision agent error: {message.result}")
+                            else:
+                                logger.info(f"Revision completed for {module_name} (cost=${message.total_cost_usd or 0:.4f})")
+            else:
+                logger.info(f"Verifier approved documentation for {module_name}")
+
+            # Extract and log score (case-insensitive)
+            score_tag = "<score>"
+            score_end_tag = "</score>"
+            if score_tag in verification_lower:
+                s_start = verification_lower.index(score_tag) + len(score_tag)
+                s_end = verification_lower.index(score_end_tag)
+                score = verification[s_start:s_end].strip()
+                logger.info(f"Verification score for {module_name}: {score}/100")
+
+        except Exception as e:
+            logger.warning(f"Verification failed for {module_name}, keeping composed doc: {e}")
+
+    # Cleanup analysis temp files (optional, keep for debugging)
+    # shutil.rmtree(analysis_dir, ignore_errors=True)
+
+    # Reload module tree
+    if os.path.exists(module_tree_path):
+        module_tree = file_manager.load_json(module_tree_path) or {}
 
     return module_tree

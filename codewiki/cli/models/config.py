@@ -11,8 +11,6 @@ from typing import Optional, List
 from pathlib import Path
 
 from codewiki.cli.utils.validation import (
-    validate_url,
-    validate_api_key,
     validate_model_name,
 )
 
@@ -21,13 +19,13 @@ from codewiki.cli.utils.validation import (
 class AgentInstructions:
     """
     Custom instructions for the documentation agent.
-    
+
     Allows users to customize:
     - File filtering (include/exclude patterns)
     - Module focus (prioritize certain modules)
     - Documentation type (API docs, architecture docs, etc.)
     - Custom instructions for the LLM
-    
+
     Attributes:
         include_patterns: File patterns to include (e.g., ["*.cs", "*.py"])
         exclude_patterns: File/directory patterns to exclude (e.g., ["*Tests*", "*test*"])
@@ -40,7 +38,7 @@ class AgentInstructions:
     focus_modules: Optional[List[str]] = None  # e.g., ["src/core", "src/api"]
     doc_type: Optional[str] = None  # e.g., "api", "architecture", "user-guide"
     custom_instructions: Optional[str] = None  # Free-form instructions
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary, excluding None values."""
         result = {}
@@ -55,7 +53,7 @@ class AgentInstructions:
         if self.custom_instructions:
             result['custom_instructions'] = self.custom_instructions
         return result
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> 'AgentInstructions':
         """Create AgentInstructions from dictionary."""
@@ -66,7 +64,7 @@ class AgentInstructions:
             doc_type=data.get('doc_type'),
             custom_instructions=data.get('custom_instructions'),
         )
-    
+
     def is_empty(self) -> bool:
         """Check if all fields are empty/None."""
         return not any([
@@ -76,11 +74,11 @@ class AgentInstructions:
             self.doc_type,
             self.custom_instructions,
         ])
-    
+
     def get_prompt_addition(self) -> str:
         """Generate prompt additions based on instructions."""
         additions = []
-        
+
         if self.doc_type:
             doc_type_instructions = {
                 'api': "Focus on API documentation: endpoints, parameters, return types, and usage examples.",
@@ -92,13 +90,13 @@ class AgentInstructions:
                 additions.append(doc_type_instructions[self.doc_type.lower()])
             else:
                 additions.append(f"Focus on generating {self.doc_type} documentation.")
-        
+
         if self.focus_modules:
             additions.append(f"Pay special attention to and provide more detailed documentation for these modules: {', '.join(self.focus_modules)}")
-        
+
         if self.custom_instructions:
             additions.append(f"Additional instructions: {self.custom_instructions}")
-        
+
         return "\n".join(additions) if additions else ""
 
 
@@ -106,12 +104,10 @@ class AgentInstructions:
 class Configuration:
     """
     CodeWiki configuration data model.
-    
+
     Attributes:
-        base_url: LLM API base URL
         main_model: Primary model for documentation generation
         cluster_model: Model for module clustering
-        fallback_model: Fallback model for documentation generation
         default_output: Default output directory
         max_tokens: Maximum tokens for LLM response (default: 32768)
         max_token_per_module: Maximum tokens per module for clustering (default: 36369)
@@ -119,33 +115,30 @@ class Configuration:
         max_depth: Maximum depth for hierarchical decomposition (default: 2)
         agent_instructions: Custom agent instructions for documentation generation
     """
-    base_url: str
-    main_model: str
-    cluster_model: str
-    fallback_model: str = "glm-4p5"
+    main_model: str = "opus"
+    cluster_model: str = "opus"
     default_output: str = "docs"
     max_tokens: int = 32768
     max_token_per_module: int = 36369
     max_token_per_leaf_module: int = 16000
     max_depth: int = 2
     agent_instructions: AgentInstructions = field(default_factory=AgentInstructions)
-    
+    deep_analysis: bool = False
+    progressive: int = 0
+
     def validate(self):
         """
         Validate all configuration fields.
-        
+
         Raises:
             ConfigurationError: If validation fails
         """
-        validate_url(self.base_url)
         validate_model_name(self.main_model)
         validate_model_name(self.cluster_model)
-        validate_model_name(self.fallback_model)
-    
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         result = {
-            'base_url': self.base_url,
             'main_model': self.main_model,
             'cluster_model': self.cluster_model,
             'default_output': self.default_output,
@@ -153,66 +146,62 @@ class Configuration:
             'max_token_per_module': self.max_token_per_module,
             'max_token_per_leaf_module': self.max_token_per_leaf_module,
             'max_depth': self.max_depth,
+            'deep_analysis': self.deep_analysis,
+            'progressive': self.progressive,
         }
         if self.agent_instructions and not self.agent_instructions.is_empty():
             result['agent_instructions'] = self.agent_instructions.to_dict()
         return result
-    
+
     @classmethod
     def from_dict(cls, data: dict) -> 'Configuration':
         """
         Create Configuration from dictionary.
-        
+
         Args:
             data: Configuration dictionary
-            
+
         Returns:
             Configuration instance
         """
         agent_instructions = AgentInstructions()
         if 'agent_instructions' in data:
             agent_instructions = AgentInstructions.from_dict(data['agent_instructions'])
-        
+
         return cls(
-            base_url=data.get('base_url', ''),
-            main_model=data.get('main_model', ''),
-            cluster_model=data.get('cluster_model', ''),
-            fallback_model=data.get('fallback_model', 'glm-4p5'),
+            main_model=data.get('main_model', 'opus'),
+            cluster_model=data.get('cluster_model', 'opus'),
             default_output=data.get('default_output', 'docs'),
             max_tokens=data.get('max_tokens', 32768),
             max_token_per_module=data.get('max_token_per_module', 36369),
             max_token_per_leaf_module=data.get('max_token_per_leaf_module', 16000),
             max_depth=data.get('max_depth', 2),
             agent_instructions=agent_instructions,
+            deep_analysis=data.get('deep_analysis', False),
+            progressive=data.get('progressive', 0),
         )
-    
+
     def is_complete(self) -> bool:
         """Check if all required fields are set."""
-        return bool(
-            self.base_url and 
-            self.main_model and 
-            self.cluster_model and
-            self.fallback_model
-        )
-    
-    def to_backend_config(self, repo_path: str, output_dir: str, api_key: str, runtime_instructions: AgentInstructions = None):
+        return bool(self.main_model and self.cluster_model)
+
+    def to_backend_config(self, repo_path: str, output_dir: str, runtime_instructions: AgentInstructions = None, no_cache: bool = False, analysis_only: bool = False, deep_analysis: bool = False, progressive: int = 0):
         """
         Convert CLI Configuration to Backend Config.
-        
+
         This method bridges the gap between persistent user settings (CLI Configuration)
         and runtime job configuration (Backend Config).
-        
+
         Args:
             repo_path: Path to the repository to document
             output_dir: Output directory for generated documentation
-            api_key: LLM API key (from keyring)
             runtime_instructions: Runtime agent instructions (override persistent settings)
-            
+
         Returns:
             Backend Config instance ready for documentation generation
         """
         from codewiki.src.config import Config
-        
+
         # Merge runtime instructions with persistent settings
         # Runtime instructions take precedence
         final_instructions = self.agent_instructions
@@ -224,19 +213,19 @@ class Configuration:
                 doc_type=runtime_instructions.doc_type or self.agent_instructions.doc_type,
                 custom_instructions=runtime_instructions.custom_instructions or self.agent_instructions.custom_instructions,
             )
-        
+
         return Config.from_cli(
             repo_path=repo_path,
             output_dir=output_dir,
-            llm_base_url=self.base_url,
-            llm_api_key=api_key,
             main_model=self.main_model,
             cluster_model=self.cluster_model,
-            fallback_model=self.fallback_model,
             max_tokens=self.max_tokens,
             max_token_per_module=self.max_token_per_module,
             max_token_per_leaf_module=self.max_token_per_leaf_module,
             max_depth=self.max_depth,
-            agent_instructions=final_instructions.to_dict() if final_instructions else None
+            agent_instructions=final_instructions.to_dict() if final_instructions else None,
+            no_cache=no_cache,
+            analysis_only=analysis_only,
+            deep_analysis=deep_analysis,
+            progressive=progressive,
         )
-

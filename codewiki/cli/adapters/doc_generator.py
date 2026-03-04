@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any
 import time
 import asyncio
+import json
 import os
 import logging
 import sys
@@ -54,7 +55,6 @@ class CLIDocumentationGenerator:
         self.job.llm_config = LLMConfig(
             main_model=config.get('main_model', ''),
             cluster_model=config.get('cluster_model', ''),
-            base_url=config.get('base_url', '')
         )
 
         self._configure_backend_logging()
@@ -102,19 +102,17 @@ class CLIDocumentationGenerator:
             backend_config = BackendConfig.from_cli(
                 repo_path=str(self.repo_path),
                 output_dir=str(self.output_dir),
-                llm_base_url=self.config.get('base_url'),
-                llm_api_key=self.config.get('api_key'),
                 main_model=self.config.get('main_model'),
                 cluster_model=self.config.get('cluster_model'),
-                fallback_model=self.config.get('fallback_model'),
                 max_tokens=self.config.get('max_tokens', 32768),
                 max_token_per_module=self.config.get('max_token_per_module', 36369),
                 max_token_per_leaf_module=self.config.get('max_token_per_leaf_module', 16000),
                 max_depth=self.config.get('max_depth', 2),
                 agent_instructions=self.config.get('agent_instructions'),
-                use_agent_sdk=self.config.get('use_agent_sdk', False),
                 no_cache=self.config.get('no_cache', False),
-                analysis_only=self.config.get('analysis_only', False)
+                analysis_only=self.config.get('analysis_only', False),
+                deep_analysis=self.config.get('deep_analysis', False),
+                progressive=self.config.get('progressive', 0)
             )
 
             asyncio.run(self._run_backend_generation(backend_config))
@@ -146,11 +144,6 @@ class CLIDocumentationGenerator:
                 self.progress_tracker.update_stage(progress, message)
             if progress >= 1.0:
                 self.progress_tracker.complete_stage()
-                # Capture statistics from stage 1
-                if stage == 1 and hasattr(doc_generator, 'graph_builder'):
-                    builder = doc_generator.graph_builder
-                    if hasattr(builder, '_last_components_count'):
-                        self.job.statistics.total_files_analyzed = builder._last_components_count
 
         try:
             await doc_generator.run(on_progress=on_progress)
@@ -162,6 +155,30 @@ class CLIDocumentationGenerator:
         for file_path in os.listdir(working_dir):
             if file_path.endswith(('.md', '.json', '.html')):
                 self.job.files_generated.append(file_path)
+
+        # Populate statistics from backend-generated metadata
+        self._populate_statistics_from_output(working_dir)
+
+    def _populate_statistics_from_output(self, working_dir: str):
+        """Read metadata.json and module_tree.json to populate job statistics."""
+        metadata_path = os.path.join(working_dir, "metadata.json")
+        if os.path.exists(metadata_path):
+            try:
+                metadata = json.loads(Path(metadata_path).read_text())
+                stats = metadata.get("statistics", {})
+                self.job.statistics.total_files_analyzed = stats.get("total_components", 0)
+                self.job.statistics.leaf_nodes = stats.get("leaf_nodes", 0)
+                self.job.statistics.max_depth = stats.get("max_depth", 0)
+            except Exception:
+                pass
+
+        module_tree_path = os.path.join(working_dir, "module_tree.json")
+        if os.path.exists(module_tree_path):
+            try:
+                module_tree = json.loads(Path(module_tree_path).read_text())
+                self.job.module_count = len(module_tree)
+            except Exception:
+                pass
 
     def _run_html_generation(self):
         """Run HTML generation stage."""

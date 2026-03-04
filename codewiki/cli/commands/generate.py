@@ -127,14 +127,21 @@ def parse_patterns(patterns_str: str) -> List[str]:
     help="Maximum depth for hierarchical decomposition (overrides config)",
 )
 @click.option(
-    "--use-agent-sdk",
-    is_flag=True,
-    help="Use Claude Agent SDK as the LLM backend instead of direct API calls",
-)
-@click.option(
     "--analysis-only",
     is_flag=True,
     help="Run only static analysis (dependency graph, metrics, codebase map) without LLM calls",
+)
+@click.option(
+    "--deep-analysis",
+    is_flag=True,
+    default=False,
+    help="Enable deep multi-agent analysis (3 parallel analyzers + composer + verifier)",
+)
+@click.option(
+    "--progressive",
+    type=int,
+    default=0,
+    help="Progressive generation: 1=analysis+tree, 2=+leaf docs, 3=+synthesis (0=full)",
 )
 @click.pass_context
 def generate_command(
@@ -153,82 +160,77 @@ def generate_command(
     max_token_per_module: Optional[int],
     max_token_per_leaf_module: Optional[int],
     max_depth: Optional[int],
-    use_agent_sdk: bool,
     analysis_only: bool,
+    deep_analysis: bool,
+    progressive: int,
 ):
     """
     Generate comprehensive documentation for a code repository.
-    
+
     Analyzes the current repository and generates documentation using LLM-powered
     analysis. Documentation is output to ./docs/ by default.
-    
+
     Examples:
-    
+
     \b
     # Basic generation
     $ codewiki generate
-    
+
     \b
     # With git branch creation and GitHub Pages
     $ codewiki generate --create-branch --github-pages
-    
+
     \b
     # Force full regeneration
     $ codewiki generate --no-cache
-    
+
     \b
     # C# project: only .cs files, exclude tests
     $ codewiki generate --include "*.cs" --exclude "*Tests*,*Specs*"
-    
+
     \b
     # Focus on specific modules with architecture docs
     $ codewiki generate --focus "src/core,src/api" --doc-type architecture
-    
+
     \b
     # Custom instructions
     $ codewiki generate --instructions "Focus on public APIs and include usage examples"
-    
+
     \b
     # Override max tokens for this generation
     $ codewiki generate --max-tokens 16384
-    
+
     \b
     # Set all max token limits
     $ codewiki generate --max-tokens 32768 --max-token-per-module 40000 --max-token-per-leaf-module 20000
-    
+
     \b
     # Override max depth for hierarchical decomposition
     $ codewiki generate --max-depth 3
-
-    \b
-    # Use Claude Agent SDK as the LLM backend
-    $ codewiki generate --use-agent-sdk
     """
     logger = create_logger(verbose=verbose)
     start_time = time.time()
-    
+
     # Suppress httpx INFO logs
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    
+
     try:
         # Pre-generation checks
         logger.step("Validating configuration...", 1, 4)
-        
+
         # Load configuration
         config_manager = ConfigManager()
         if analysis_only:
-            # No API key needed for static analysis
+            # No config needed for static analysis
             config_manager.load()
             config = config_manager.get_config() if config_manager.is_configured() else None
-            api_key = None
             logger.success("Analysis-only mode (no LLM required)")
         else:
             if not config_manager.load():
                 raise ConfigurationError(
                     "Configuration not found or invalid.\n\n"
-                    "Please run 'codewiki config set' to configure your LLM API credentials:\n"
-                    "  codewiki config set --api-key <your-api-key> --base-url <api-url> \\\n"
-                    "    --main-model <model> --cluster-model <model>\n\n"
+                    "Please run 'codewiki config set' to configure your settings:\n"
+                    "  codewiki config set --main-model opus --cluster-model opus\n\n"
                     "For more help: codewiki config --help"
                 )
 
@@ -238,20 +240,19 @@ def generate_command(
                 )
 
             config = config_manager.get_config()
-            api_key = config_manager.get_api_key()
 
             logger.success("Configuration valid")
-        
+
         # Validate repository
         logger.step("Validating repository...", 2, 4)
-        
+
         repo_path = Path.cwd()
         repo_path, languages = validate_repository(repo_path)
-        
+
         logger.success(f"Repository valid: {repo_path.name}")
         if verbose:
             logger.debug(f"Detected languages: {', '.join(f'{lang} ({count} files)' for lang, count in languages)}")
-        
+
         # Check git repository
         if not is_git_repository(repo_path):
             if create_branch:
@@ -262,13 +263,13 @@ def generate_command(
                 )
             else:
                 logger.warning("Not a git repository. Git features unavailable.")
-        
+
         # Validate output directory
         output_dir = Path(output).expanduser().resolve()
         check_writable_output(output_dir.parent)
-        
+
         logger.success(f"Output directory: {output_dir}")
-        
+
         # Check for existing documentation
         if output_dir.exists() and list(output_dir.glob("*.md")):
             if not click.confirm(
@@ -277,16 +278,16 @@ def generate_command(
             ):
                 logger.info("Generation cancelled by user.")
                 sys.exit(EXIT_SUCCESS)
-        
+
         # Git branch creation (if requested)
         branch_name = None
         if create_branch:
             logger.step("Creating git branch...", 3, 4)
-            
+
             from codewiki.cli.git_manager import GitManager
-            
+
             git_manager = GitManager(repo_path)
-            
+
             # Check clean working directory
             is_clean, status_msg = git_manager.check_clean_working_directory()
             if not is_clean:
@@ -299,15 +300,15 @@ def generate_command(
                     "  # or\n"
                     "  git stash"
                 )
-            
+
             # Create branch
             branch_name = git_manager.create_documentation_branch()
             logger.success(f"Created branch: {branch_name}")
-        
+
         # Generate documentation
         logger.step("Generating documentation...", 4, 4)
         click.echo()
-        
+
         # Create generation options
         generation_options = GenerationOptions(
             create_branch=create_branch,
@@ -315,7 +316,7 @@ def generate_command(
             no_cache=no_cache,
             custom_output=output if output != "docs" else None
         )
-        
+
         # Create runtime agent instructions from CLI options
         runtime_instructions = None
         if any([include, exclude, focus, doc_type, instructions]):
@@ -326,7 +327,7 @@ def generate_command(
                 doc_type=doc_type,
                 custom_instructions=instructions,
             )
-            
+
             if verbose:
                 if include:
                     logger.debug(f"Include patterns: {parse_patterns(include)}")
@@ -338,7 +339,7 @@ def generate_command(
                     logger.debug(f"Doc type: {doc_type}")
                 if instructions:
                     logger.debug(f"Custom instructions: {instructions}")
-        
+
         # Log max token settings if verbose
         if verbose and config:
             effective_max_tokens = max_tokens if max_tokens is not None else config.max_tokens
@@ -372,34 +373,33 @@ def generate_command(
             config={
                 'main_model': config.main_model if config else '',
                 'cluster_model': config.cluster_model if config else '',
-                'fallback_model': config.fallback_model if config else '',
-                'base_url': config.base_url if config else '',
-                'api_key': api_key,
                 'agent_instructions': agent_instructions_dict,
                 # Max token settings (runtime overrides take precedence)
-                'max_tokens': max_tokens or (config.max_tokens if config else 32768),
-                'max_token_per_module': max_token_per_module or (config.max_token_per_module if config else 36369),
-                'max_token_per_leaf_module': max_token_per_leaf_module or (config.max_token_per_leaf_module if config else 16000),
+                'max_tokens': max_tokens if max_tokens is not None else (config.max_tokens if config else 32768),
+                'max_token_per_module': max_token_per_module if max_token_per_module is not None else (config.max_token_per_module if config else 36369),
+                'max_token_per_leaf_module': max_token_per_leaf_module if max_token_per_leaf_module is not None else (config.max_token_per_leaf_module if config else 16000),
                 # Max depth setting (runtime override takes precedence)
-                'max_depth': max_depth or (config.max_depth if config else 2),
-                'use_agent_sdk': use_agent_sdk,
+                'max_depth': max_depth if max_depth is not None else (config.max_depth if config else 2),
+                'no_cache': no_cache,
                 'analysis_only': analysis_only,
+                'deep_analysis': deep_analysis,
+                'progressive': progressive,
             },
             verbose=verbose,
             generate_html=github_pages and not analysis_only
         )
-        
+
         # Run generation
         job = generator.generate()
-        
+
         # Post-generation
         generation_time = time.time() - start_time
-        
+
         # Get repository info
         repo_url = None
         commit_hash = get_git_commit_hash(repo_path)
         current_branch = get_git_branch(repo_path)
-        
+
         if is_git_repository(repo_path):
             try:
                 import git
@@ -408,7 +408,7 @@ def generate_command(
                     repo_url = repo.remotes.origin.url
             except Exception:
                 pass
-        
+
         # Display instructions
         display_post_generation_instructions(
             output_dir=output_dir,
@@ -424,7 +424,7 @@ def generate_command(
                 'total_tokens_used': job.statistics.total_tokens_used,
             }
         )
-        
+
     except (ConfigurationError, RepositoryError, APIError) as e:
         logger.error(e.message)
         logger.error(f"Traceback: {traceback.format_exc()}")
@@ -434,4 +434,3 @@ def generate_command(
         sys.exit(130)
     except Exception as e:
         sys.exit(handle_error(e, verbose=verbose))
-

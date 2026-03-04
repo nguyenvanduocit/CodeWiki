@@ -10,17 +10,14 @@ from typing import Optional, List
 from codewiki.cli.config_manager import ConfigManager
 from codewiki.cli.models.config import AgentInstructions
 from codewiki.cli.utils.errors import (
-    ConfigurationError, 
-    handle_error, 
+    ConfigurationError,
+    handle_error,
     EXIT_SUCCESS,
     EXIT_CONFIG_ERROR
 )
 from codewiki.cli.utils.validation import (
-    validate_url,
-    validate_api_key,
     validate_model_name,
     is_top_tier_model,
-    mask_api_key
 )
 
 
@@ -33,21 +30,11 @@ def parse_patterns(patterns_str: str) -> List[str]:
 
 @click.group(name="config")
 def config_group():
-    """Manage CodeWiki configuration (API credentials and settings)."""
+    """Manage CodeWiki configuration."""
     pass
 
 
 @config_group.command(name="set")
-@click.option(
-    "--api-key",
-    type=str,
-    help="LLM API key (stored securely in system keychain)"
-)
-@click.option(
-    "--base-url",
-    type=str,
-    help="LLM API base URL (e.g., https://api.anthropic.com)"
-)
 @click.option(
     "--main-model",
     type=str,
@@ -57,11 +44,6 @@ def config_group():
     "--cluster-model",
     type=str,
     help="Model for module clustering (recommend top-tier)"
-)
-@click.option(
-    "--fallback-model",
-    type=str,
-    help="Fallback model for documentation generation"
 )
 @click.option(
     "--max-tokens",
@@ -84,11 +66,8 @@ def config_group():
     help="Maximum depth for hierarchical decomposition (default: 2)"
 )
 def config_set(
-    api_key: Optional[str],
-    base_url: Optional[str],
     main_model: Optional[str],
     cluster_model: Optional[str],
-    fallback_model: Optional[str],
     max_tokens: Optional[int],
     max_token_per_module: Optional[int],
     max_token_per_leaf_module: Optional[int],
@@ -96,115 +75,82 @@ def config_set(
 ):
     """
     Set configuration values for CodeWiki.
-    
-    API keys are stored securely in your system keychain:
-      • macOS: Keychain Access
-      • Windows: Credential Manager  
-      • Linux: Secret Service (GNOME Keyring, KWallet)
-    
+
     Examples:
-    
+
     \b
-    # Set all configuration
-    $ codewiki config set --api-key sk-abc123 --base-url https://api.anthropic.com \\
-        --main-model claude-sonnet-4 --cluster-model claude-sonnet-4 --fallback-model glm-4p5
-    
-    \b
-    # Update only API key
-    $ codewiki config set --api-key sk-new-key
-    
+    # Set models
+    $ codewiki config set --main-model opus --cluster-model opus
+
     \b
     # Set max tokens for LLM response
     $ codewiki config set --max-tokens 16384
-    
+
     \b
     # Set all max token settings
     $ codewiki config set --max-tokens 32768 --max-token-per-module 40000 --max-token-per-leaf-module 20000
-    
+
     \b
     # Set max depth for hierarchical decomposition
     $ codewiki config set --max-depth 3
     """
     try:
         # Check if at least one option is provided
-        if not any([api_key, base_url, main_model, cluster_model, fallback_model, max_tokens, max_token_per_module, max_token_per_leaf_module, max_depth]):
+        if not any([main_model, cluster_model, max_tokens, max_token_per_module, max_token_per_leaf_module, max_depth]):
             click.echo("No options provided. Use --help for usage information.")
             sys.exit(EXIT_CONFIG_ERROR)
-        
+
         # Validate inputs before saving
         validated_data = {}
-        
-        if api_key:
-            validated_data['api_key'] = validate_api_key(api_key)
-        
-        if base_url:
-            validated_data['base_url'] = validate_url(base_url)
-        
+
         if main_model:
             validated_data['main_model'] = validate_model_name(main_model)
-        
+
         if cluster_model:
             validated_data['cluster_model'] = validate_model_name(cluster_model)
-        
-        if fallback_model:
-            validated_data['fallback_model'] = validate_model_name(fallback_model)
-        
+
         if max_tokens is not None:
             if max_tokens < 1:
                 raise ConfigurationError("max_tokens must be a positive integer")
             validated_data['max_tokens'] = max_tokens
-        
+
         if max_token_per_module is not None:
             if max_token_per_module < 1:
                 raise ConfigurationError("max_token_per_module must be a positive integer")
             validated_data['max_token_per_module'] = max_token_per_module
-        
+
         if max_token_per_leaf_module is not None:
             if max_token_per_leaf_module < 1:
                 raise ConfigurationError("max_token_per_leaf_module must be a positive integer")
             validated_data['max_token_per_leaf_module'] = max_token_per_leaf_module
-        
+
         if max_depth is not None:
             if max_depth < 1:
                 raise ConfigurationError("max_depth must be a positive integer")
             validated_data['max_depth'] = max_depth
-        
+
         # Create config manager and save
         manager = ConfigManager()
         manager.load()  # Load existing config if present
-        
+
         manager.save(
-            api_key=validated_data.get('api_key'),
-            base_url=validated_data.get('base_url'),
             main_model=validated_data.get('main_model'),
             cluster_model=validated_data.get('cluster_model'),
-            fallback_model=validated_data.get('fallback_model'),
             max_tokens=validated_data.get('max_tokens'),
             max_token_per_module=validated_data.get('max_token_per_module'),
             max_token_per_leaf_module=validated_data.get('max_token_per_leaf_module'),
             max_depth=validated_data.get('max_depth')
         )
-        
+
         # Display success messages
         click.echo()
-        if api_key:
-            if manager.keyring_available:
-                click.secho("✓ API key saved to system keychain", fg="green")
-            else:
-                click.secho(
-                    "⚠️  System keychain unavailable. API key stored in encrypted file.",
-                    fg="yellow"
-                )
-        
-        if base_url:
-            click.secho(f"✓ Base URL: {base_url}", fg="green")
-        
+
         if main_model:
             click.secho(f"✓ Main model: {main_model}", fg="green")
-        
+
         if cluster_model:
             click.secho(f"✓ Cluster model: {cluster_model}", fg="green")
-            
+
             # Warn if not using top-tier model for clustering
             if not is_top_tier_model(cluster_model):
                 click.secho(
@@ -213,26 +159,23 @@ def config_set(
                     fg="yellow"
                 )
                 click.echo(
-                    "   Recommended models: claude-opus, claude-sonnet-4, gpt-4, gpt-4-turbo"
+                    "   Recommended models: claude-opus, claude-sonnet-4"
                 )
-        
-        if fallback_model:
-            click.secho(f"✓ Fallback model: {fallback_model}", fg="green")
-        
+
         if max_tokens:
             click.secho(f"✓ Max tokens: {max_tokens}", fg="green")
-        
+
         if max_token_per_module:
             click.secho(f"✓ Max token per module: {max_token_per_module}", fg="green")
-        
+
         if max_token_per_leaf_module:
             click.secho(f"✓ Max token per leaf module: {max_token_per_leaf_module}", fg="green")
-        
+
         if max_depth:
             click.secho(f"✓ Max depth: {max_depth}", fg="green")
-        
+
         click.echo("\n" + click.style("Configuration updated successfully.", fg="green", bold=True))
-        
+
     except ConfigurationError as e:
         click.secho(f"\n✗ Configuration error: {e.message}", fg="red", err=True)
         sys.exit(e.exit_code)
@@ -250,42 +193,34 @@ def config_set(
 def config_show(output_json: bool):
     """
     Display current configuration.
-    
-    API keys are masked for security (showing only first and last 4 characters).
-    
+
     Examples:
-    
+
     \b
     # Display configuration
     $ codewiki config show
-    
+
     \b
     # Display as JSON
     $ codewiki config show --json
     """
     try:
         manager = ConfigManager()
-        
+
         if not manager.load():
             click.secho("\n✗ Configuration not found.", fg="red", err=True)
-            click.echo("\nPlease run 'codewiki config set' to configure your API credentials:")
-            click.echo("  codewiki config set --api-key <key> --base-url <url> \\")
-            click.echo("    --main-model <model> --cluster-model <model> --fallback-model <model>")
+            click.echo("\nPlease run 'codewiki config set' to configure your settings:")
+            click.echo("  codewiki config set --main-model opus --cluster-model opus")
             click.echo("\nFor more help: codewiki config set --help")
             sys.exit(EXIT_CONFIG_ERROR)
-        
+
         config = manager.get_config()
-        api_key = manager.get_api_key()
-        
+
         if output_json:
             # JSON output
             output = {
-                "api_key": mask_api_key(api_key) if api_key else "Not set",
-                "api_key_storage": "keychain" if manager.keyring_available else "encrypted_file",
-                "base_url": config.base_url if config else "",
                 "main_model": config.main_model if config else "",
                 "cluster_model": config.cluster_model if config else "",
-                "fallback_model": config.fallback_model if config else "glm-4p5",
                 "default_output": config.default_output if config else "docs",
                 "max_tokens": config.max_tokens if config else 32768,
                 "max_token_per_module": config.max_token_per_module if config else 36369,
@@ -301,41 +236,31 @@ def config_show(output_json: bool):
             click.secho("CodeWiki Configuration", fg="blue", bold=True)
             click.echo("━" * 40)
             click.echo()
-            
-            click.secho("Credentials", fg="cyan", bold=True)
-            if api_key:
-                storage = "system keychain" if manager.keyring_available else "encrypted file"
-                click.echo(f"  API Key:          {mask_api_key(api_key)} (in {storage})")
-            else:
-                click.secho("  API Key:          Not set", fg="yellow")
-            
-            click.echo()
-            click.secho("API Settings", fg="cyan", bold=True)
+
+            click.secho("Model Settings", fg="cyan", bold=True)
             if config:
-                click.echo(f"  Base URL:         {config.base_url or 'Not set'}")
                 click.echo(f"  Main Model:       {config.main_model or 'Not set'}")
                 click.echo(f"  Cluster Model:    {config.cluster_model or 'Not set'}")
-                click.echo(f"  Fallback Model:   {config.fallback_model or 'Not set'}")
             else:
                 click.secho("  Not configured", fg="yellow")
-            
+
             click.echo()
             click.secho("Output Settings", fg="cyan", bold=True)
             if config:
                 click.echo(f"  Default Output:   {config.default_output}")
-            
+
             click.echo()
             click.secho("Token Settings", fg="cyan", bold=True)
             if config:
                 click.echo(f"  Max Tokens:              {config.max_tokens}")
                 click.echo(f"  Max Token/Module:        {config.max_token_per_module}")
                 click.echo(f"  Max Token/Leaf Module:   {config.max_token_per_leaf_module}")
-            
+
             click.echo()
             click.secho("Decomposition Settings", fg="cyan", bold=True)
             if config:
                 click.echo(f"  Max Depth:               {config.max_depth}")
-            
+
             click.echo()
             click.secho("Agent Instructions", fg="cyan", bold=True)
             if config and config.agent_instructions and not config.agent_instructions.is_empty():
@@ -352,47 +277,36 @@ def config_show(output_json: bool):
                     click.echo(f"  Custom instructions: {agent.custom_instructions[:50]}...")
             else:
                 click.secho("  Using defaults (no custom settings)", fg="yellow")
-            
+
             click.echo()
             click.echo(f"Configuration file: {manager.config_file_path}")
             click.echo()
-        
+
     except Exception as e:
         sys.exit(handle_error(e))
 
 
 @config_group.command(name="validate")
 @click.option(
-    "--quick",
-    is_flag=True,
-    help="Skip API connectivity test"
-)
-@click.option(
     "--verbose",
     "-v",
     is_flag=True,
     help="Show detailed validation steps"
 )
-def config_validate(quick: bool, verbose: bool):
+def config_validate(verbose: bool):
     """
-    Validate configuration and test LLM API connectivity.
-    
+    Validate configuration.
+
     Checks:
       • Configuration file exists and is valid
-      • API key is present
-      • API settings are correctly formatted
-      • (Optional) API connectivity test
-    
+      • Models are configured
+
     Examples:
-    
+
     \b
-    # Full validation with API test
+    # Validate configuration
     $ codewiki config validate
-    
-    \b
-    # Quick validation (config only)
-    $ codewiki config validate --quick
-    
+
     \b
     # Verbose output
     $ codewiki config validate --verbose
@@ -401,109 +315,56 @@ def config_validate(quick: bool, verbose: bool):
         click.echo()
         click.secho("Validating configuration...", fg="blue", bold=True)
         click.echo()
-        
+
         manager = ConfigManager()
-        
+
         # Step 1: Check config file
         if verbose:
-            click.echo("[1/5] Checking configuration file...")
+            click.echo("[1/2] Checking configuration file...")
             click.echo(f"      Path: {manager.config_file_path}")
-        
+
         if not manager.load():
             click.secho("✗ Configuration file not found", fg="red")
             click.echo()
             click.echo("Error: Configuration is incomplete. Run 'codewiki config set --help' for setup instructions.")
             sys.exit(EXIT_CONFIG_ERROR)
-        
+
         if verbose:
             click.secho("      ✓ File exists", fg="green")
             click.secho("      ✓ Valid JSON format", fg="green")
         else:
             click.secho("✓ Configuration file exists", fg="green")
-        
-        # Step 2: Check API key
-        if verbose:
-            click.echo()
-            click.echo("[2/5] Checking API key...")
-            storage = "system keychain" if manager.keyring_available else "encrypted file"
-            click.echo(f"      Storage: {storage}")
-        
-        api_key = manager.get_api_key()
-        if not api_key:
-            click.secho("✗ API key missing", fg="red")
-            click.echo()
-            click.echo("Error: API key not set. Run 'codewiki config set --api-key <key>'")
-            sys.exit(EXIT_CONFIG_ERROR)
-        
-        if verbose:
-            click.secho(f"      ✓ API key retrieved", fg="green")
-            click.secho(f"      ✓ Length: {len(api_key)} characters", fg="green")
-        else:
-            click.secho("✓ API key present (stored in keychain)", fg="green")
-        
-        # Step 3: Check base URL
+
+        # Step 2: Check models
         config = manager.get_config()
         if verbose:
             click.echo()
-            click.echo("[3/5] Checking base URL...")
-            click.echo(f"      URL: {config.base_url}")
-        
-        if not config.base_url:
-            click.secho("✗ Base URL not set", fg="red")
-            sys.exit(EXIT_CONFIG_ERROR)
-        
-        try:
-            validate_url(config.base_url)
-            if verbose:
-                click.secho("      ✓ Valid HTTPS URL", fg="green")
-            else:
-                click.secho(f"✓ Base URL valid: {config.base_url}", fg="green")
-        except ConfigurationError as e:
-            click.secho(f"✗ Invalid base URL: {e.message}", fg="red")
-            sys.exit(EXIT_CONFIG_ERROR)
-        
-        # Step 4: Check models
-        if verbose:
-            click.echo()
-            click.echo("[4/5] Checking model configuration...")
+            click.echo("[2/2] Checking model configuration...")
             click.echo(f"      Main model: {config.main_model}")
             click.echo(f"      Cluster model: {config.cluster_model}")
-            click.echo(f"      Fallback model: {config.fallback_model}")
-        
-        if not config.main_model or not config.cluster_model or not config.fallback_model:
+
+        if not config.main_model or not config.cluster_model:
             click.secho("✗ Models not configured", fg="red")
             sys.exit(EXIT_CONFIG_ERROR)
-        
+
         if verbose:
             click.secho("      ✓ Models configured", fg="green")
         else:
             click.secho(f"✓ Main model configured: {config.main_model}", fg="green")
             click.secho(f"✓ Cluster model configured: {config.cluster_model}", fg="green")
-            click.secho(f"✓ Fallback model configured: {config.fallback_model}", fg="green")
-        
+
         # Warn about non-top-tier cluster model
         if not is_top_tier_model(config.cluster_model):
             click.secho(
-                "⚠️  Cluster model is not top-tier. Consider using claude-sonnet-4 or gpt-4.",
+                "⚠️  Cluster model is not top-tier. Consider using claude-opus or claude-sonnet-4.",
                 fg="yellow"
             )
-        
-        # Step 5: API connectivity test (unless --quick)
-        if not quick:
-            try:
-                from openai import OpenAI
-                client = OpenAI(api_key=api_key, base_url=config.base_url)
-                response = client.models.list()
-                click.secho("✓ API connectivity test successful", fg="green")
-            except Exception as e:
-                click.secho("✗ API connectivity test failed", fg="red")
-                sys.exit(EXIT_CONFIG_ERROR)
-        
+
         # Success
         click.echo()
         click.secho("✓ Configuration is valid!", fg="green", bold=True)
         click.echo()
-        
+
     except ConfigurationError as e:
         click.secho(f"\n✗ Configuration error: {e.message}", fg="red", err=True)
         sys.exit(e.exit_code)
@@ -561,46 +422,46 @@ def config_agent(
 ):
     """
     Configure default agent instructions for documentation generation.
-    
+
     These settings are used as defaults when running 'codewiki generate'.
     Runtime options (--include, --exclude, etc.) override these defaults.
-    
+
     Examples:
-    
+
     \b
     # Set include patterns for C# projects
     $ codewiki config agent --include "*.cs"
-    
+
     \b
     # Exclude test projects
     $ codewiki config agent --exclude "*Tests*,*Specs*,test_*"
-    
+
     \b
     # Focus on specific modules
     $ codewiki config agent --focus "src/core,src/api"
-    
+
     \b
     # Set default doc type
     $ codewiki config agent --doc-type architecture
-    
+
     \b
     # Add custom instructions
     $ codewiki config agent --instructions "Focus on public APIs and include usage examples"
-    
+
     \b
     # Clear all agent instructions
     $ codewiki config agent --clear
     """
     try:
         manager = ConfigManager()
-        
+
         if not manager.load():
             click.secho("\n✗ Configuration not found.", fg="red", err=True)
-            click.echo("\nPlease run 'codewiki config set' first to configure your API credentials.")
+            click.echo("\nPlease run 'codewiki config set' first to configure your settings.")
             sys.exit(EXIT_CONFIG_ERROR)
-        
+
         config = manager.get_config()
-        
+
         if clear:
             # Clear all agent instructions
             config.agent_instructions = AgentInstructions()
@@ -609,7 +470,7 @@ def config_agent(
             click.secho("✓ Agent instructions cleared", fg="green")
             click.echo()
             return
-        
+
         # Check if at least one option is provided
         if not any([include, exclude, focus, doc_type, instructions]):
             # Display current settings
@@ -617,7 +478,7 @@ def config_agent(
             click.secho("Agent Instructions", fg="blue", bold=True)
             click.echo("━" * 40)
             click.echo()
-            
+
             agent = config.agent_instructions
             if agent and not agent.is_empty():
                 if agent.include_patterns:
@@ -632,15 +493,15 @@ def config_agent(
                     click.echo(f"  Custom instructions: {agent.custom_instructions}")
             else:
                 click.secho("  No agent instructions configured (using defaults)", fg="yellow")
-            
+
             click.echo()
             click.echo("Use 'codewiki config agent --help' for usage information.")
             click.echo()
             return
-        
+
         # Update agent instructions
         current = config.agent_instructions or AgentInstructions()
-        
+
         if include is not None:
             current.include_patterns = parse_patterns(include) if include else None
         if exclude is not None:
@@ -651,10 +512,10 @@ def config_agent(
             current.doc_type = doc_type if doc_type else None
         if instructions is not None:
             current.custom_instructions = instructions if instructions else None
-        
+
         config.agent_instructions = current
         manager.save()
-        
+
         # Display success messages
         click.echo()
         if include:
@@ -667,13 +528,12 @@ def config_agent(
             click.secho(f"✓ Doc type: {doc_type}", fg="green")
         if instructions:
             click.secho(f"✓ Custom instructions set", fg="green")
-        
+
         click.echo("\n" + click.style("Agent instructions updated successfully.", fg="green", bold=True))
         click.echo()
-        
+
     except ConfigurationError as e:
         click.secho(f"\n✗ Configuration error: {e.message}", fg="red", err=True)
         sys.exit(e.exit_code)
     except Exception as e:
         sys.exit(handle_error(e))
-

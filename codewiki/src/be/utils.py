@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------
 
 def log_token_usage(result, prefix: str = "") -> None:
-    """Log token usage from a pydantic-ai agent result."""
+    """Log token usage from an agent result."""
     if not (hasattr(result, 'usage') and result.usage):
         return
     usage = result.usage

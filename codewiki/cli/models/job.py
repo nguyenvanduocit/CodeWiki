@@ -41,7 +41,6 @@ class LLMConfig:
     """LLM configuration for a job."""
     main_model: str
     cluster_model: str
-    base_url: str
 
 
 @dataclass

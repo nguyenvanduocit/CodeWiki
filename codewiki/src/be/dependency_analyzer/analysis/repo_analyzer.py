@@ -98,6 +98,9 @@ class RepoAnalyzer:
         return build_tree(Path(repo_dir), Path(repo_dir))
 
     def _should_exclude_path(self, path: str, filename: str) -> bool:
+        # Skip all dot-prefixed directories/files (e.g., .git, .venv, .idea)
+        if filename.startswith('.'):
+            return True
         for pattern in self.exclude_patterns:
             if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(filename, pattern):
                 return True

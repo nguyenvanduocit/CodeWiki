@@ -1,19 +1,23 @@
 import json
 import logging
 import os
+import re
 import traceback
+from collections import deque
 from copy import deepcopy
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable
 
 from codewiki.src.be.dependency_analyzer import DependencyGraphBuilder
-from codewiki.src.be.llm_services import call_llm
 from codewiki.src.be.prompt_template import (
     REPO_OVERVIEW_PROMPT,
     MODULE_OVERVIEW_PROMPT,
+    CODEBASE_MAP_PROMPT,
     format_summary_metrics_section,
+    format_dependency_context,
 )
 from codewiki.src.be.cluster_modules import cluster_modules
+from codewiki.src.be.claude_agent_sdk_adapter import agent_sdk_call_llm, agent_sdk_process_module, agent_sdk_process_module_deep
 from codewiki.src.config import (
     Config,
     INITIAL_MODULE_TREE_FILENAME,
@@ -22,7 +26,6 @@ from codewiki.src.config import (
     OVERVIEW_FILENAME
 )
 from codewiki.src.utils import file_manager
-from codewiki.src.be.agent_orchestrator import AgentOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +37,7 @@ class DocumentationGenerator:
         self.config = config
         self.commit_id = commit_id
         self.graph_builder = DependencyGraphBuilder(config)
-        self.agent_orchestrator = AgentOrchestrator(config)
+        self.module_summaries: Dict[str, str] = {}
 
     # ── Metadata (pipeline state) ──
 
@@ -122,24 +125,23 @@ class DocumentationGenerator:
     # ── LLM dispatch ──
 
     async def _process_module(self, module_name, components, component_ids,
-                              module_path, working_dir, module_tree):
-        """Dispatch module processing to Agent SDK or pydantic-ai orchestrator."""
-        if self.config.use_agent_sdk:
-            from codewiki.src.be.claude_agent_sdk_adapter import agent_sdk_process_module
-            return await agent_sdk_process_module(
+                              module_path, working_dir, dependency_context: str = ""):
+        """Dispatch module processing to Agent SDK."""
+        if self.config.deep_analysis:
+            return await agent_sdk_process_module_deep(
                 module_name, components, component_ids,
-                module_path, working_dir, self.config, module_tree
+                module_path, working_dir, self.config,
+                dependency_context=dependency_context
             )
-        return await self.agent_orchestrator.process_module(
-            module_name, components, component_ids, module_path, working_dir, module_tree
+        return await agent_sdk_process_module(
+            module_name, components, component_ids,
+            module_path, working_dir, self.config,
+            dependency_context=dependency_context
         )
 
     async def _call_llm(self, prompt):
-        """Dispatch LLM call to Agent SDK or standard call_llm."""
-        if self.config.use_agent_sdk:
-            from codewiki.src.be.claude_agent_sdk_adapter import agent_sdk_call_llm
-            return await agent_sdk_call_llm(prompt, self.config)
-        return call_llm(prompt, self.config)
+        """Call LLM via Agent SDK."""
+        return await agent_sdk_call_llm(prompt, self.config)
 
     # ── Module tree helpers ──
 
@@ -160,6 +162,135 @@ class DocumentationGenerator:
                     processing_order.append((current_path, module_name))
 
         collect_modules(module_tree, parent_path)
+        return processing_order
+
+    def build_module_dependency_graph(self, module_tree: Dict[str, Any], components: Dict[str, Any]) -> Dict[str, set]:
+        """Build module-level dependency graph from component dependencies.
+
+        Returns dict mapping module_name -> set of module_names it depends on.
+        """
+        # Walk the module tree to build component_id -> module_name mapping
+        component_to_module: Dict[str, str] = {}
+
+        def map_components(tree: Dict[str, Any]):
+            for module_name, module_info in tree.items():
+                for comp_id in module_info.get("components", []):
+                    component_to_module[comp_id] = module_name
+                children = module_info.get("children")
+                if children and isinstance(children, dict):
+                    map_components(children)
+
+        map_components(module_tree)
+
+        # Build module-level dependency graph
+        module_deps: Dict[str, set] = {}
+
+        # Collect all module names first
+        def collect_module_names(tree: Dict[str, Any]):
+            for module_name, module_info in tree.items():
+                module_deps.setdefault(module_name, set())
+                children = module_info.get("children")
+                if children and isinstance(children, dict):
+                    collect_module_names(children)
+
+        collect_module_names(module_tree)
+
+        # For each component, check its depends_on and map to module-level edges
+        for comp_id, module_name in component_to_module.items():
+            if comp_id not in components:
+                continue
+            node = components[comp_id]
+            for dep_id in node.depends_on:
+                dep_module = component_to_module.get(dep_id)
+                if dep_module and dep_module != module_name:
+                    module_deps[module_name].add(dep_module)
+
+        return module_deps
+
+    def topological_sort_modules(self, module_tree: Dict[str, Any], components: Dict[str, Any]) -> List[tuple[List[str], str]]:
+        """Get processing order using topological sort based on dependency graph.
+
+        Falls back to tree-hierarchy order if cycles exist.
+        """
+        module_deps = self.build_module_dependency_graph(module_tree, components)
+        tree_order = self.get_processing_order(module_tree)
+
+        # Build a lookup: module_name -> (path, name) from tree order
+        tree_order_lookup: Dict[str, tuple[List[str], str]] = {}
+        for path, name in tree_order:
+            tree_order_lookup[name] = (path, name)
+
+        # Kahn's algorithm for topological sort (dependencies first)
+        # in_degree = how many deps each module has
+        in_degree: Dict[str, int] = {m: len(deps) for m, deps in module_deps.items()}
+
+        # Build reverse graph: dep -> set of modules that depend on it
+        reverse_deps: Dict[str, set] = {m: set() for m in module_deps}
+        for module_name, deps in module_deps.items():
+            for dep in deps:
+                if dep in reverse_deps:
+                    reverse_deps[dep].add(module_name)
+
+        # Start with modules that have no dependencies
+        queue = deque(sorted(m for m, d in in_degree.items() if d == 0))
+        topo_order: List[str] = []
+        topo_level: Dict[str, int] = {m: 0 for m in queue}
+
+        while queue:
+            module_name = queue.popleft()
+            topo_order.append(module_name)
+            # For each module that depends on this one, decrement its in_degree
+            for dependent in sorted(reverse_deps.get(module_name, set())):
+                if dependent in in_degree:
+                    in_degree[dependent] -= 1
+                    # Track the level: max dependency depth + 1
+                    topo_level[dependent] = max(
+                        topo_level.get(dependent, 0),
+                        topo_level[module_name] + 1,
+                    )
+                    if in_degree[dependent] == 0:
+                        queue.append(dependent)
+
+        # Check for cycles
+        remaining = set(module_deps.keys()) - set(topo_order)
+        if remaining:
+            logger.warning(
+                f"Dependency cycle detected among modules: {remaining}. "
+                f"Appending in tree-hierarchy order as fallback."
+            )
+            for path, name in tree_order:
+                if name in remaining:
+                    topo_order.append(name)
+
+        # Enforce tree constraint: leaf modules before their parents.
+        # The tree_order already has this property (children before parents).
+        # We use tree_order positions as a tiebreaker to ensure parents come after children.
+        tree_position: Dict[str, int] = {}
+        for idx, (_, name) in enumerate(tree_order):
+            tree_position[name] = idx
+
+        # Build final order: sort by topo level (dependency depth) primarily,
+        # tree position as tiebreaker (children before parents within same level).
+        sorted_names = sorted(
+            topo_order,
+            key=lambda name: (topo_level.get(name, 0), tree_position.get(name, 0))
+        )
+
+        # Convert back to the expected format: List[tuple[List[str], str]]
+        processing_order: List[tuple[List[str], str]] = []
+        seen = set()
+        for name in sorted_names:
+            if name in tree_order_lookup and name not in seen:
+                seen.add(name)
+                processing_order.append(tree_order_lookup[name])
+
+        # Ensure any modules from tree_order that weren't in module_deps are included
+        for path, name in tree_order:
+            if name not in seen:
+                seen.add(name)
+                processing_order.append((path, name))
+
+        logger.info(f"Topological processing order: {[name for _, name in processing_order]}")
         return processing_order
 
     def is_leaf_module(self, module_info: Dict[str, Any]) -> bool:
@@ -192,6 +323,173 @@ class DocumentationGenerator:
 
         return processed_module_tree
 
+    def _extract_module_summary(self, docs_path: str, module_name: str, max_chars: int = 800) -> str:
+        """Extract a brief summary from a generated module doc file.
+
+        Takes the first heading and first 2-3 paragraphs (up to max_chars).
+        """
+        if not os.path.exists(docs_path):
+            return ""
+        try:
+            content = file_manager.load_text(docs_path)
+            if not content:
+                return ""
+
+            lines = content.split('\n')
+            summary_lines = []
+            char_count = 0
+
+            for line in lines:
+                # Stop at max_chars
+                if char_count > max_chars:
+                    break
+                # Skip empty lines at the start
+                if not summary_lines and not line.strip():
+                    continue
+                summary_lines.append(line)
+                char_count += len(line)
+
+            return '\n'.join(summary_lines).strip()
+        except Exception as e:
+            logger.debug(f"Could not extract summary for {module_name}: {e}")
+            return ""
+
+    # ── Cross-document linking ──
+
+    def post_process_cross_links(self, working_dir: str, module_tree: Dict[str, Any]) -> None:
+        """Post-process all generated docs to add inter-document markdown links.
+
+        Walks every .md file in working_dir and replaces mentions of other module
+        names with relative markdown links.  Avoids linking inside code blocks,
+        inline code, or existing markdown links, and only links the first
+        occurrence of each module per heading section.
+        """
+        # Step 1: Build module_name -> filename mapping
+        module_files: Dict[str, str] = {}
+        self._collect_module_files(module_tree, module_files)
+
+        # Include well-known special files
+        overview_stem = OVERVIEW_FILENAME.replace(".md", "")
+        module_files[overview_stem] = OVERVIEW_FILENAME
+        module_files["CODEBASE_MAP"] = "CODEBASE_MAP.md"
+
+        if not module_files:
+            return
+
+        # Step 2: Process each .md file
+        for filename in os.listdir(working_dir):
+            if not filename.endswith(".md"):
+                continue
+            filepath = os.path.join(working_dir, filename)
+            try:
+                content = file_manager.load_text(filepath)
+            except Exception:
+                continue
+            if not content:
+                continue
+
+            current_module = filename.replace(".md", "")
+            modified = self._add_cross_links(content, module_files, current_module)
+
+            if modified != content:
+                file_manager.save_text(modified, filepath)
+                logger.debug(f"Added cross-links to {filename}")
+
+    def _collect_module_files(self, tree: Dict[str, Any], result: Dict[str, str]) -> None:
+        """Recursively walk the module tree and populate name -> filename mapping."""
+        for name, info in tree.items():
+            result[name] = f"{name}.md"
+            children = info.get("children", {})
+            if children and isinstance(children, dict):
+                self._collect_module_files(children, result)
+
+    def _add_cross_links(self, content: str, module_files: Dict[str, str],
+                         current_module: str) -> str:
+        """Replace module-name mentions with markdown links in non-code text.
+
+        Splits the document by fenced code blocks and inline code spans so that
+        only prose segments are modified.  Within each heading section, only the
+        first occurrence of each module name is linked (to avoid over-linking).
+        """
+        # Split content into code and non-code segments.
+        # Fenced code blocks (```...```) and inline code (`...`) are preserved as-is.
+        segments = re.split(r"(```[\s\S]*?```|`[^`\n]+`)", content)
+
+        # Build name variants: both "Module Name" (with spaces) and
+        # "module_name" (with underscores) should match for each module.
+        # We sort by length descending so longer names match first and
+        # shorter substrings don't accidentally consume partial matches.
+        link_targets: List[tuple[str, str, re.Pattern]] = []
+        for name, filename in sorted(module_files.items(), key=lambda x: len(x[0]), reverse=True):
+            if name == current_module:
+                continue
+            # Variant with underscores replaced by spaces
+            display_name = name.replace("_", " ")
+            escaped = re.escape(name)
+            # Match both underscore form and space form
+            if "_" in name:
+                space_variant = re.escape(display_name)
+                pattern = re.compile(
+                    r"(?<!\[)(?<!\()\b(" + escaped + r"|" + space_variant + r")\b(?!\]|\))",
+                    re.IGNORECASE,
+                )
+            else:
+                pattern = re.compile(
+                    r"(?<!\[)(?<!\()\b(" + escaped + r")\b(?!\]|\))",
+                    re.IGNORECASE,
+                )
+            link_targets.append((name, filename, pattern))
+
+        # Track linked modules per section to enforce first-occurrence-only rule.
+        linked_in_section: set = set()
+
+        result_parts: List[str] = []
+        for i, segment in enumerate(segments):
+            # Odd-indexed segments are code blocks/inline code -- keep as-is
+            if i % 2 == 1:
+                result_parts.append(segment)
+                continue
+
+            # Reset per-section tracking when we encounter a heading
+            lines = segment.split("\n")
+            processed_lines: List[str] = []
+            for line in lines:
+                # Detect heading to reset per-section tracking
+                if re.match(r"^#{1,6}\s", line):
+                    linked_in_section = set()
+
+                modified_line = line
+                for name, filename, pattern in link_targets:
+                    if name in linked_in_section:
+                        continue
+                    # Check if this line already contains a markdown link for this module
+                    if f"](./{filename})" in modified_line or f"]({filename})" in modified_line:
+                        continue
+
+                    def _replace_first(match: re.Match) -> str:
+                        """Replace only the first match and mark as linked."""
+                        matched_text = match.group(0)
+                        # Don't replace if inside an existing markdown link
+                        # Check surrounding context in the full line
+                        start = match.start()
+                        prefix = modified_line[:start]
+                        # If there's an unmatched '[' before us, we're inside a link text
+                        open_brackets = prefix.count("[") - prefix.count("]")
+                        if open_brackets > 0:
+                            return matched_text
+                        return f"[{matched_text}](./{filename})"
+
+                    new_line, count = pattern.subn(_replace_first, modified_line, count=1)
+                    if count > 0:
+                        modified_line = new_line
+                        linked_in_section.add(name)
+
+                processed_lines.append(modified_line)
+
+            result_parts.append("\n".join(processed_lines))
+
+        return "".join(result_parts)
+
     # ── Documentation generation ──
 
     async def generate_module_documentation(self, components: Dict[str, Any], leaf_nodes: List[str],
@@ -203,7 +501,8 @@ class DocumentationGenerator:
         """
         file_manager.ensure_directory(working_dir)
 
-        processing_order = self.get_processing_order(module_tree)
+        self.module_deps = self.build_module_dependency_graph(module_tree, components)
+        processing_order = self.topological_sort_modules(module_tree, components)
         completed_modules = self._get_completed_modules(metadata)
         final_module_tree = module_tree
 
@@ -234,17 +533,34 @@ class DocumentationGenerator:
                             completed_modules.add(module_key)
                         continue
 
+                    # Collect dependency context from already-processed modules
+                    dependency_context = ""
+                    if hasattr(self, 'module_deps') and module_name in self.module_deps:
+                        dep_summaries = {}
+                        for dep_name in self.module_deps[module_name]:
+                            if dep_name in self.module_summaries:
+                                dep_summaries[dep_name] = self.module_summaries[dep_name]
+                        dependency_context = format_dependency_context(module_name, dep_summaries)
+
                     if self.is_leaf_module(module_info):
                         logger.info(f"Processing leaf module: {module_key}")
                         final_module_tree = await self._process_module(
-                            module_name, components, module_info["components"],
-                            module_path, working_dir, module_tree
+                            module_name, components, module_info.get("components", []),
+                            module_path, working_dir, dependency_context=dependency_context
                         )
+                    elif self.config.progressive == 2:
+                        logger.info(f"Skipping parent module in progressive phase 2: {module_key}")
+                        continue
                     else:
                         logger.info(f"Processing parent module: {module_key}")
                         final_module_tree = await self.generate_parent_module_docs(
                             module_path, working_dir, module_tree
                         )
+
+                    # Store summary for downstream modules
+                    summary = self._extract_module_summary(docs_path, module_name)
+                    if summary:
+                        self.module_summaries[module_name] = summary
 
                     if os.path.exists(docs_path):
                         self._mark_module_completed(working_dir, metadata, module_key)
@@ -256,22 +572,34 @@ class DocumentationGenerator:
                     logger.error(f"Traceback: {traceback.format_exc()}")
                     continue
 
-            # Generate repo overview
-            overview_key = "__overview__"
-            overview_path = os.path.join(working_dir, OVERVIEW_FILENAME)
-            if overview_key not in completed_modules or not os.path.exists(overview_path):
-                logger.info("Generating repository overview")
-                final_module_tree = await self.generate_parent_module_docs(
-                    [], working_dir, module_tree
-                )
-                self._mark_module_completed(working_dir, metadata, overview_key)
+            # Progressive phase 2: skip overview and CODEBASE_MAP.md (only leaf docs)
+            if self.config.progressive != 2:
+                # Generate repo overview
+                overview_key = "__overview__"
+                overview_path = os.path.join(working_dir, OVERVIEW_FILENAME)
+                if overview_key not in completed_modules or not os.path.exists(overview_path):
+                    logger.info("Generating repository overview")
+                    final_module_tree = await self.generate_parent_module_docs(
+                        [], working_dir, module_tree
+                    )
+                    self._mark_module_completed(working_dir, metadata, overview_key)
+                else:
+                    logger.info("Skipping completed overview")
+
+                # Generate CODEBASE_MAP.md index document
+                logger.info("Generating CODEBASE_MAP.md index document")
+                await self.generate_codebase_map_doc(working_dir, module_tree)
+
+                # Post-process: add cross-document links
+                logger.info("Post-processing: adding cross-document links")
+                self.post_process_cross_links(working_dir, module_tree)
             else:
-                logger.info("Skipping completed overview")
+                logger.info("Progressive phase 2: skipping overview, CODEBASE_MAP.md, and cross-links")
         else:
             logger.info("Processing whole repo because repo can fit in the context window")
             repo_name = os.path.basename(os.path.normpath(self.config.repo_path))
             final_module_tree = await self._process_module(
-                repo_name, components, leaf_nodes, [], working_dir, module_tree
+                repo_name, components, leaf_nodes, [], working_dir
             )
 
             file_manager.save_json(final_module_tree, os.path.join(working_dir, MODULE_TREE_FILENAME))
@@ -340,6 +668,57 @@ class DocumentationGenerator:
             logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
+    async def generate_codebase_map_doc(self, working_dir: str, module_tree: dict) -> None:
+        """Generate CODEBASE_MAP.md — a comprehensive index document for the codebase."""
+        codebase_map_doc_path = os.path.join(working_dir, "CODEBASE_MAP.md")
+
+        if not self.config.no_cache and os.path.exists(codebase_map_doc_path):
+            logger.info(f"CODEBASE_MAP.md already exists at {codebase_map_doc_path}")
+            return
+
+        repo_name = os.path.basename(os.path.normpath(self.config.repo_path))
+        module_tree_text = json.dumps(module_tree, indent=2)
+
+        # Load codebase metrics from codebase_map.json
+        codebase_metrics = "{}"
+        codebase_map_json_path = os.path.join(working_dir, "codebase_map.json")
+        if os.path.exists(codebase_map_json_path):
+            try:
+                codebase_map_data = file_manager.load_json(codebase_map_json_path)
+                codebase_metrics = json.dumps(codebase_map_data, indent=2)
+            except Exception as e:
+                logger.warning(f"Could not load codebase_map.json: {e}")
+
+        # List all generated docs
+        generated_docs = []
+        try:
+            for f in sorted(os.listdir(working_dir)):
+                if f.endswith('.md'):
+                    generated_docs.append(f"- `{f}`")
+        except Exception as e:
+            logger.warning(f"Could not list docs: {e}")
+        generated_docs_list = "\n".join(generated_docs) if generated_docs else "(no docs found)"
+
+        prompt = CODEBASE_MAP_PROMPT.format(
+            repo_name=repo_name,
+            module_tree=module_tree_text,
+            codebase_metrics=codebase_metrics,
+            generated_docs_list=generated_docs_list,
+        )
+
+        try:
+            result = await self._call_llm(prompt)
+
+            if "<CODEBASE_MAP>" not in result or "</CODEBASE_MAP>" not in result:
+                raise ValueError("LLM response missing CODEBASE_MAP tags")
+            content = result.split("<CODEBASE_MAP>")[1].split("</CODEBASE_MAP>")[0].strip()
+            file_manager.save_text(content, codebase_map_doc_path)
+            logger.info(f"Generated CODEBASE_MAP.md at {codebase_map_doc_path}")
+
+        except Exception as e:
+            logger.error(f"Error generating CODEBASE_MAP.md: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+
     # ── Main pipeline ──
 
     async def run(self, on_progress: Optional[Callable] = None) -> None:
@@ -407,16 +786,18 @@ class DocumentationGenerator:
             if os.path.exists(initial_module_tree_path) and not self.config.no_cache:
                 module_tree = file_manager.load_json(initial_module_tree_path) or {}
             else:
-                if self.config.use_agent_sdk:
-                    from codewiki.src.be.claude_agent_sdk_adapter import agent_sdk_cluster
-                    module_tree = await agent_sdk_cluster(leaf_nodes, components, self.config)
-                else:
-                    module_tree = cluster_modules(leaf_nodes, components, self.config)
+                module_tree = await cluster_modules(leaf_nodes, components, self.config, call_llm_fn=agent_sdk_call_llm)
                 file_manager.save_json(module_tree, initial_module_tree_path)
 
             file_manager.save_json(module_tree, module_tree_path)
             self._mark_stage_completed(working_dir, metadata, "module_clustering")
             progress(2, "Module Clustering", 1.0, f"Created {len(module_tree)} modules")
+
+            # Progressive phase 1: stop after analysis + module tree
+            if self.config.progressive == 1:
+                self._finalize_metadata(working_dir, metadata)
+                progress(4, "Finalization", 1.0, "Progressive phase 1 complete (analysis + module tree)")
+                return
 
             # Cache filtering: determine which components changed
             cache = None
