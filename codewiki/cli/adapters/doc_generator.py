@@ -112,7 +112,11 @@ class CLIDocumentationGenerator:
                 no_cache=self.config.get('no_cache', False),
                 analysis_only=self.config.get('analysis_only', False),
                 deep_analysis=self.config.get('deep_analysis', False),
-                progressive=self.config.get('progressive', 0)
+                progressive=self.config.get('progressive', 0),
+                with_debug_docs=self.config.get('with_debug_docs', False),
+                with_monitoring_docs=self.config.get('with_monitoring_docs', False),
+                only_debug_docs=self.config.get('only_debug_docs', False),
+                only_monitoring_docs=self.config.get('only_monitoring_docs', False),
             )
 
             asyncio.run(self._run_backend_generation(backend_config))

@@ -24,6 +24,8 @@ from codewiki.src.be.prompt_template import (
     format_system_prompt,
     format_leaf_system_prompt,
     format_component_metrics,
+    format_debug_notebook_prompt,
+    format_monitoring_notebook_prompt,
     STRUCTURE_ANALYSIS_PROMPT,
     FLOW_ANALYSIS_PROMPT,
     API_ANALYSIS_PROMPT,
@@ -497,3 +499,170 @@ Read the existing doc, verify claims against source code, apply the revisions, a
         module_tree = file_manager.load_json(module_tree_path) or {}
 
     return module_tree
+
+
+_NOTEBOOK_CONFIGS = {
+    "debug": {
+        "suffix": "debug",
+        "label": "DebugNotebook",
+        "format_prompt_fn": format_debug_notebook_prompt,
+        "doc_description": "a debug investigation runbook",
+        "instructions": [
+            "1. Read the architecture doc (if available) to understand the module's responsibilities",
+            "2. Read source files for core components to identify actual error paths and failure conditions",
+            "3. Read `codebase_map.json` in {working_dir} to identify hub components",
+            "4. Create `{module_name}_{suffix}.md` at the output path with all required sections",
+            "5. Every failure mode must reference actual code paths with `path:line` evidence",
+            "6. Reference other modules by linking to `[module_name](module_name.md)`",
+        ],
+    },
+    "monitoring": {
+        "suffix": "monitoring",
+        "label": "MonitoringNotebook",
+        "format_prompt_fn": format_monitoring_notebook_prompt,
+        "doc_description": "a monitoring specification notebook",
+        "instructions": [
+            "1. Read the architecture doc (if available) to understand the module's responsibilities and I/O patterns",
+            "2. Read source files for core components to identify actual operations, timeouts, and error conditions",
+            "3. Read `codebase_map.json` in {working_dir} to identify this module's role and dependencies",
+            "4. Create `{module_name}_{suffix}.md` at the output path with all required sections",
+            "5. Use `{module_name}_` as the metric name prefix for consistency",
+            "6. All alert thresholds must be justified by actual code behavior (timeouts, retry counts, etc.)",
+            "7. Reference other modules by linking to `[module_name](module_name.md)`",
+        ],
+    },
+}
+
+
+async def _agent_sdk_process_notebook(
+    notebook_type: str,
+    module_name: str,
+    components: Dict[str, Any],
+    core_component_ids: List[str],
+    module_path: List[str],
+    working_dir: str,
+    config: Config,
+    model: Optional[str] = None,
+    dependency_context: str = "",
+    no_cache: bool = False,
+) -> None:
+    """Internal helper: generate a notebook (debug or monitoring) for a module."""
+    nb = _NOTEBOOK_CONFIGS[notebook_type]
+    suffix = nb["suffix"]
+    label = nb["label"]
+
+    output_path = os.path.join(working_dir, f"{module_name}_{suffix}.md")
+
+    if not no_cache and os.path.exists(output_path):
+        logger.info(f"{label} already exists at {output_path}")
+        return
+
+    system_prompt = nb["format_prompt_fn"](
+        module_name=module_name,
+        tools_section=CLAUDE_CODE_TOOLS_SECTION,
+        dependency_context=dependency_context,
+    )
+
+    # Build component list for context
+    component_lines = []
+    for comp_id in core_component_ids:
+        if comp_id not in components:
+            continue
+        comp = components[comp_id]
+        component_lines.append(f"- {comp_id} (file: {comp.relative_path})")
+    component_list = "\n".join(component_lines) if component_lines else "(no components)"
+
+    arch_doc_path = os.path.join(working_dir, f"{module_name}.md")
+    arch_doc_note = (
+        f"Architecture doc available at: {os.path.abspath(arch_doc_path)}"
+        if os.path.exists(arch_doc_path)
+        else "No architecture doc available yet — read source files directly."
+    )
+
+    dep_context_section = f"\n{dependency_context}\n" if dependency_context else ""
+
+    instructions = "\n".join(
+        line.format(module_name=module_name, suffix=suffix, working_dir=os.path.abspath(working_dir))
+        for line in nb["instructions"]
+    )
+
+    user_prompt = f"""Generate {nb["doc_description"]} for the **{module_name}** module.
+
+<REPOSITORY_PATH>
+{os.path.abspath(config.repo_path)}
+</REPOSITORY_PATH>
+
+<OUTPUT_PATH>
+{os.path.abspath(output_path)}
+</OUTPUT_PATH>
+
+<ARCHITECTURE_CONTEXT>
+{arch_doc_note}
+</ARCHITECTURE_CONTEXT>
+
+<CORE_COMPONENTS>
+{component_list}
+</CORE_COMPONENTS>
+{dep_context_section}
+Instructions:
+{instructions}
+"""
+
+    logger.info(f"Agent SDK generating {suffix} notebook: {module_name}")
+
+    options = ClaudeAgentOptions(
+        permission_mode="bypassPermissions",
+        cwd=os.path.abspath(config.repo_path),
+        system_prompt=system_prompt,
+        model=model or config.main_model or "opus",
+    )
+
+    async for message in query(prompt=user_prompt, options=options):
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    logger.debug(f"{label} ({module_name}): {block.text[:150]}...")
+        elif isinstance(message, ResultMessage):
+            if message.is_error:
+                logger.error(f"{label} agent error for {module_name}: {message.result}")
+                raise RuntimeError(f"{label} agent failed for {module_name}: {message.result}")
+            logger.info(f"{label} completed for {module_name} "
+                        f"(turns={message.num_turns}, cost=${message.total_cost_usd or 0:.4f})")
+
+
+async def agent_sdk_process_debug_notebook(
+    module_name: str,
+    components: Dict[str, Any],
+    core_component_ids: List[str],
+    module_path: List[str],
+    working_dir: str,
+    config: Config,
+    model: Optional[str] = None,
+    dependency_context: str = "",
+    no_cache: bool = False,
+) -> None:
+    """Generate a debug investigation runbook for a module."""
+    await _agent_sdk_process_notebook(
+        "debug", module_name, components, core_component_ids,
+        module_path, working_dir, config, model=model,
+        dependency_context=dependency_context, no_cache=no_cache,
+    )
+
+
+async def agent_sdk_process_monitoring_notebook(
+    module_name: str,
+    components: Dict[str, Any],
+    core_component_ids: List[str],
+    module_path: List[str],
+    working_dir: str,
+    config: Config,
+    model: Optional[str] = None,
+    dependency_context: str = "",
+    no_cache: bool = False,
+) -> None:
+    """Generate a monitoring specification notebook for a module."""
+    await _agent_sdk_process_notebook(
+        "monitoring", module_name, components, core_component_ids,
+        module_path, working_dir, config, model=model,
+        dependency_context=dependency_context, no_cache=no_cache,
+    )

@@ -123,4 +123,5 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --cov=codewiki --cov-report=term-missing"
+asyncio_mode = "auto"
 

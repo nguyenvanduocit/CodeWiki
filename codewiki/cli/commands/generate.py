@@ -143,6 +143,30 @@ def parse_patterns(patterns_str: str) -> List[str]:
     default=0,
     help="Progressive generation: 1=analysis+tree, 2=+leaf docs, 3=+synthesis (0=full)",
 )
+@click.option(
+    "--with-debug-docs",
+    is_flag=True,
+    default=False,
+    help="Generate debug investigation runbooks ({module}_debug.md) for each module",
+)
+@click.option(
+    "--with-monitoring-docs",
+    is_flag=True,
+    default=False,
+    help="Generate monitoring specification notebooks ({module}_monitoring.md) for each module",
+)
+@click.option(
+    "--only-debug-docs",
+    is_flag=True,
+    default=False,
+    help="Skip main doc generation; only generate debug runbooks for existing modules",
+)
+@click.option(
+    "--only-monitoring-docs",
+    is_flag=True,
+    default=False,
+    help="Skip main doc generation; only generate monitoring notebooks for existing modules",
+)
 @click.pass_context
 def generate_command(
     ctx,
@@ -163,6 +187,10 @@ def generate_command(
     analysis_only: bool,
     deep_analysis: bool,
     progressive: int,
+    with_debug_docs: bool,
+    with_monitoring_docs: bool,
+    only_debug_docs: bool,
+    only_monitoring_docs: bool,
 ):
     """
     Generate comprehensive documentation for a code repository.
@@ -384,6 +412,10 @@ def generate_command(
                 'analysis_only': analysis_only,
                 'deep_analysis': deep_analysis,
                 'progressive': progressive,
+                'with_debug_docs': with_debug_docs,
+                'with_monitoring_docs': with_monitoring_docs,
+                'only_debug_docs': only_debug_docs,
+                'only_monitoring_docs': only_monitoring_docs,
             },
             verbose=verbose,
             generate_html=github_pages and not analysis_only
