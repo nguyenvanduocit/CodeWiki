@@ -50,6 +50,15 @@ class Config:
     analysis_only: bool = False
     deep_analysis: bool = False
     progressive: int = 0  # 0=full, 1=analysis+tree, 2=+leaf docs, 3=+parent+overview
+    with_debug_docs: bool = False
+    with_monitoring_docs: bool = False
+    only_debug_docs: bool = False
+    only_monitoring_docs: bool = False
+
+    def __post_init__(self):
+        """Enforce flag coupling: only_* implies with_*."""
+        self.with_debug_docs = self.with_debug_docs or self.only_debug_docs
+        self.with_monitoring_docs = self.with_monitoring_docs or self.only_monitoring_docs
 
     @property
     def include_patterns(self) -> Optional[List[str]]:
@@ -127,6 +136,10 @@ class Config:
             max_depth=MAX_DEPTH,
             main_model="opus",
             cluster_model="opus",
+            with_debug_docs=getattr(args, 'with_debug_docs', False),
+            with_monitoring_docs=getattr(args, 'with_monitoring_docs', False),
+            only_debug_docs=getattr(args, 'only_debug_docs', False),
+            only_monitoring_docs=getattr(args, 'only_monitoring_docs', False),
         )
 
     @classmethod
@@ -144,7 +157,11 @@ class Config:
         no_cache: bool = False,
         analysis_only: bool = False,
         deep_analysis: bool = False,
-        progressive: int = 0
+        progressive: int = 0,
+        with_debug_docs: bool = False,
+        with_monitoring_docs: bool = False,
+        only_debug_docs: bool = False,
+        only_monitoring_docs: bool = False,
     ) -> 'Config':
         """
         Create configuration for CLI context.
@@ -159,6 +176,14 @@ class Config:
             max_token_per_leaf_module: Maximum tokens per leaf module
             max_depth: Maximum depth for hierarchical decomposition
             agent_instructions: Custom agent instructions dict
+            no_cache: Disable caching
+            analysis_only: Stop after static analysis
+            deep_analysis: Use deep multi-agent analysis pipeline
+            progressive: Progressive generation phase (0=full)
+            with_debug_docs: Generate debug notebooks alongside documentation
+            with_monitoring_docs: Generate monitoring notebooks alongside documentation
+            only_debug_docs: Generate only debug notebooks (skip doc generation)
+            only_monitoring_docs: Generate only monitoring notebooks (skip doc generation)
 
         Returns:
             Config instance
@@ -181,5 +206,9 @@ class Config:
             no_cache=no_cache,
             analysis_only=analysis_only,
             deep_analysis=deep_analysis,
-            progressive=progressive
+            progressive=progressive,
+            with_debug_docs=with_debug_docs,
+            with_monitoring_docs=with_monitoring_docs,
+            only_debug_docs=only_debug_docs,
+            only_monitoring_docs=only_monitoring_docs,
         )

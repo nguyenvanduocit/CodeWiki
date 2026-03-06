@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -17,7 +18,13 @@ from codewiki.src.be.prompt_template import (
     format_dependency_context,
 )
 from codewiki.src.be.cluster_modules import cluster_modules
-from codewiki.src.be.claude_agent_sdk_adapter import agent_sdk_call_llm, agent_sdk_process_module, agent_sdk_process_module_deep
+from codewiki.src.be.claude_agent_sdk_adapter import (
+    agent_sdk_call_llm,
+    agent_sdk_process_module,
+    agent_sdk_process_module_deep,
+    agent_sdk_process_debug_notebook,
+    agent_sdk_process_monitoring_notebook,
+)
 from codewiki.src.config import (
     Config,
     INITIAL_MODULE_TREE_FILENAME,
@@ -138,6 +145,38 @@ class DocumentationGenerator:
             module_path, working_dir, self.config,
             dependency_context=dependency_context
         )
+
+    async def _process_module_notebooks(
+        self,
+        module_name: str,
+        components: Dict[str, Any],
+        component_ids: List[str],
+        module_path: List[str],
+        working_dir: str,
+        dependency_context: str = "",
+        no_cache: bool = False,
+    ) -> None:
+        """Generate debug and/or monitoring notebooks for a module in parallel."""
+        tasks = []
+        if self.config.with_debug_docs:
+            tasks.append(agent_sdk_process_debug_notebook(
+                module_name, components, component_ids,
+                module_path, working_dir, self.config,
+                dependency_context=dependency_context,
+                no_cache=no_cache,
+            ))
+        if self.config.with_monitoring_docs:
+            tasks.append(agent_sdk_process_monitoring_notebook(
+                module_name, components, component_ids,
+                module_path, working_dir, self.config,
+                dependency_context=dependency_context,
+                no_cache=no_cache,
+            ))
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error(f"Notebook generation failed for {module_name}: {result}")
 
     async def _call_llm(self, prompt):
         """Call LLM via Agent SDK."""
@@ -376,9 +415,11 @@ class DocumentationGenerator:
         if not module_files:
             return
 
-        # Step 2: Process each .md file
+        # Step 2: Process each .md file (skip notebook files)
         for filename in os.listdir(working_dir):
             if not filename.endswith(".md"):
+                continue
+            if filename.endswith("_debug.md") or filename.endswith("_monitoring.md"):
                 continue
             filepath = os.path.join(working_dir, filename)
             try:
@@ -524,15 +565,6 @@ class DocumentationGenerator:
                         module_component_ids = set(module_info.get("components", []))
                         has_changes = bool(module_component_ids.intersection(changed_ids))
 
-                    # Skip if docs exist on disk and no components changed
-                    # Filesystem is the primary truth (survives metadata corruption)
-                    if not has_changes and os.path.exists(docs_path):
-                        logger.info(f"Skipping module (docs exist, no changes): {module_key}")
-                        if module_key not in completed_modules:
-                            self._mark_module_completed(working_dir, metadata, module_key)
-                            completed_modules.add(module_key)
-                        continue
-
                     # Collect dependency context from already-processed modules
                     dependency_context = ""
                     if hasattr(self, 'module_deps') and module_name in self.module_deps:
@@ -541,6 +573,22 @@ class DocumentationGenerator:
                             if dep_name in self.module_summaries:
                                 dep_summaries[dep_name] = self.module_summaries[dep_name]
                         dependency_context = format_dependency_context(module_name, dep_summaries)
+
+                    # Skip if docs exist on disk and no components changed
+                    # Filesystem is the primary truth (survives metadata corruption)
+                    if not has_changes and os.path.exists(docs_path):
+                        logger.info(f"Skipping module (docs exist, no changes): {module_key}")
+                        if module_key not in completed_modules:
+                            self._mark_module_completed(working_dir, metadata, module_key)
+                            completed_modules.add(module_key)
+                        # Still generate notebooks if requested — they may not exist yet
+                        if self.config.with_debug_docs or self.config.with_monitoring_docs:
+                            await self._process_module_notebooks(
+                                module_name, components, module_info.get("components", []),
+                                module_path, working_dir,
+                                dependency_context=dependency_context,
+                            )
+                        continue
 
                     if self.is_leaf_module(module_info):
                         logger.info(f"Processing leaf module: {module_key}")
@@ -566,6 +614,13 @@ class DocumentationGenerator:
                         self._mark_module_completed(working_dir, metadata, module_key)
                     else:
                         logger.warning(f"Module processed but output file not found: {docs_path}")
+
+                    # Generate debug/monitoring notebooks if requested
+                    if self.config.with_debug_docs or self.config.with_monitoring_docs:
+                        await self._process_module_notebooks(
+                            module_name, components, module_info.get("components", []),
+                            module_path, working_dir, dependency_context=dependency_context,
+                        )
 
                 except Exception as e:
                     logger.error(f"Failed to process module {module_key}: {e}")
@@ -721,6 +776,73 @@ class DocumentationGenerator:
 
     # ── Main pipeline ──
 
+    async def _run_notebooks_only(self, on_progress: Optional[Callable] = None) -> None:
+        """Fast path: generate debug/monitoring notebooks for existing modules.
+
+        Skips LLM-based documentation generation. Loads the existing module_tree.json,
+        re-runs fast AST dependency analysis (no LLM), then generates notebooks in parallel
+        for each module that doesn't already have the requested notebook files.
+        """
+        def progress(stage, name, pct, msg):
+            if on_progress:
+                on_progress(stage, name, pct, msg)
+
+        working_dir = os.path.abspath(self.config.docs_dir)
+        file_manager.ensure_directory(working_dir)
+
+        # Load existing module tree — required for notebooks-only mode
+        module_tree_path = os.path.join(working_dir, MODULE_TREE_FILENAME)
+        if not os.path.exists(module_tree_path):
+            raise FileNotFoundError(
+                f"No module_tree.json found at {module_tree_path}. "
+                "Run 'codewiki generate' first to build the base documentation."
+            )
+        module_tree = file_manager.load_json(module_tree_path) or {}
+        logger.info(f"Loaded module tree with {len(module_tree)} top-level modules")
+
+        # Re-run dependency analysis (fast AST parsing, no LLM)
+        progress(1, "Dependency Analysis", 0.2, "Parsing source files...")
+        components, _ = self.graph_builder.build_dependency_graph()
+        progress(1, "Dependency Analysis", 1.0, f"Found {len(components)} components")
+
+        # Iterate modules and generate notebooks
+        notebook_types = []
+        if self.config.only_debug_docs:
+            notebook_types.append("debug")
+        if self.config.only_monitoring_docs:
+            notebook_types.append("monitoring")
+        logger.info(f"Generating {', '.join(notebook_types)} notebooks for all modules")
+
+        processing_order = self.topological_sort_modules(module_tree, components)
+        total = len(processing_order)
+
+        progress(2, "Notebook Generation", 0.0, f"Generating notebooks for {total} modules...")
+
+        failures = 0
+        for idx, (module_path, module_name) in enumerate(processing_order):
+            try:
+                module_info = module_tree
+                for path_part in module_path:
+                    module_info = module_info[path_part]
+                    if path_part != module_path[-1]:
+                        module_info = module_info.get("children", {})
+
+                await self._process_module_notebooks(
+                    module_name, components, module_info.get("components", []),
+                    module_path, working_dir, no_cache=self.config.no_cache,
+                )
+                pct = (idx + 1) / total
+                progress(2, "Notebook Generation", pct, f"Completed {module_name} ({idx + 1}/{total})")
+            except Exception as e:
+                failures += 1
+                logger.error(f"Notebook generation failed for {module_name}: {e}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
+
+        summary_msg = f"All notebooks generated ({failures} failures)" if failures else "All notebooks generated"
+        progress(2, "Notebook Generation", 1.0, summary_msg)
+        if failures == total and total > 0:
+            logger.warning(f"All {total} notebook generations failed")
+
     async def run(self, on_progress: Optional[Callable] = None) -> None:
         """Run the complete documentation generation pipeline.
 
@@ -733,6 +855,11 @@ class DocumentationGenerator:
         def progress(stage, name, pct, msg):
             if on_progress:
                 on_progress(stage, name, pct, msg)
+
+        # Fast path: only generate notebooks from existing module tree, skip full pipeline
+        if self.config.only_debug_docs or self.config.only_monitoring_docs:
+            await self._run_notebooks_only(on_progress=on_progress)
+            return
 
         try:
             working_dir = os.path.abspath(self.config.docs_dir)
@@ -817,6 +944,10 @@ class DocumentationGenerator:
                         logger.info("All components unchanged and all modules completed (cache hit).")
                         save_cache(working_dir, cache)
                         self._finalize_metadata(working_dir, metadata)
+                        if self.config.with_debug_docs or self.config.with_monitoring_docs:
+                            progress(4, "Finalization", 1.0, "Generating notebooks (cache hit)...")
+                            await self._run_notebooks_only(on_progress=on_progress)
+                            return
                         progress(4, "Finalization", 1.0, "Complete (cached)")
                         return
                     else:
