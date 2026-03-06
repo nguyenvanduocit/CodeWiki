@@ -579,6 +579,11 @@ codebase_map_content
 
 CLUSTER_REPO_PROMPT = """
 Here is list of all potential core components of the repository (It's normal that some components are not essential to the repository):
+
+IMPORTANT: Each component name listed below is a fully-qualified dotted identifier (e.g. `pkg.file.FunctionName`).
+You MUST copy these identifiers exactly as shown — do NOT shorten them to package or file paths.
+Only include component names that appear verbatim in the list above.
+
 <POTENTIAL_CORE_COMPONENTS>
 {potential_core_components}
 </POTENTIAL_CORE_COMPONENTS>
@@ -591,16 +596,16 @@ Firstly reason about the components and then group them and return the result in
     "module_name_1": {{
         "path": <path_to_the_module_1>, # the path to the module can be file or directory
         "components": [
-            <component_name_1>,
-            <component_name_2>,
+            <exact_dotted_component_id_1>,
+            <exact_dotted_component_id_2>,
             ...
         ]
     }},
     "module_name_2": {{
         "path": <path_to_the_module_2>,
         "components": [
-            <component_name_1>,
-            <component_name_2>,
+            <exact_dotted_component_id_1>,
+            <exact_dotted_component_id_2>,
             ...
         ]
     }},
@@ -617,6 +622,11 @@ Here is the module tree of a repository:
 </MODULE_TREE>
 
 Here is list of all potential core components of the module {module_name} (It's normal that some components are not essential to the module):
+
+IMPORTANT: Each component name listed below is a fully-qualified dotted identifier (e.g. `pkg.file.FunctionName`).
+You MUST copy these identifiers exactly as shown — do NOT shorten them to package or file paths.
+Only include component names that appear verbatim in the list above.
+
 <POTENTIAL_CORE_COMPONENTS>
 {potential_core_components}
 </POTENTIAL_CORE_COMPONENTS>
@@ -630,16 +640,16 @@ Firstly reason based on given context and then group them and return the result 
     "module_name_1": {{
         "path": <path_to_the_module_1>, # the path to the module can be file or directory
         "components": [
-            <component_name_1>,
-            <component_name_2>,
+            <exact_dotted_component_id_1>,
+            <exact_dotted_component_id_2>,
             ...
         ]
     }},
     "module_name_2": {{
         "path": <path_to_the_module_2>,
         "components": [
-            <component_name_1>,
-            <component_name_2>,
+            <exact_dotted_component_id_1>,
+            <exact_dotted_component_id_2>,
             ...
         ]
     }},

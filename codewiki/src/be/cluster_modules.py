@@ -21,7 +21,16 @@ def format_potential_core_components(leaf_nodes: List[str], components: Dict[str
         if leaf_node in components:
             valid_leaf_nodes.append(leaf_node)
         else:
-            logger.warning(f"Skipping invalid leaf node '{leaf_node}' - not found in components")
+            # Fallback: LLM may have returned a truncated prefix — expand it
+            expanded = [k for k in components if k.startswith(leaf_node + ".")]
+            if expanded:
+                logger.warning(
+                    f"Leaf node '{leaf_node}' not found directly; "
+                    f"expanding to {len(expanded)} prefixed component(s)"
+                )
+                valid_leaf_nodes.extend(expanded)
+            else:
+                logger.warning(f"Skipping invalid leaf node '{leaf_node}' - not found in components")
 
     #group leaf nodes by file
     leaf_nodes_by_file = defaultdict(list)
@@ -120,7 +129,16 @@ async def cluster_modules(
             if node in components:
                 valid_sub_leaf_nodes.append(node)
             else:
-                logger.warning(f"Skipping invalid sub leaf node '{node}' in module '{module_name}' - not found in components")
+                # Fallback: LLM may have returned a truncated prefix — expand it
+                expanded = [k for k in components if k.startswith(node + ".")]
+                if expanded:
+                    logger.warning(
+                        f"Sub leaf node '{node}' in module '{module_name}' not found directly; "
+                        f"expanding to {len(expanded)} prefixed component(s)"
+                    )
+                    valid_sub_leaf_nodes.extend(expanded)
+                else:
+                    logger.warning(f"Skipping invalid sub leaf node '{node}' in module '{module_name}' - not found in components")
 
         current_module_path.append(module_name)
         module_info["children"] = {}
