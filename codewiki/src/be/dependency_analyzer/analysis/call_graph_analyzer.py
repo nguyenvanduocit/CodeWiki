@@ -297,33 +297,72 @@ class CallGraphAnalyzer:
 
         Attempts to match function calls to actual function definitions,
         handling cross-language calls where possible.
+
+        Uses module-scoped (directory-scoped) matching for bare names to avoid
+        false cross-package edges. In Go, functions in different packages often
+        share names (New, Run, Handle, etc.) — global bare-name matching creates
+        false dependency cycles.
         """
-        func_lookup = {}
+        # Qualified lookup: exact IDs, component IDs, ReceiverType.Method keys
+        qualified_lookup = {}
+        # Module-scoped lookup: directory -> {bare_name -> func_id, "Type.Method" -> func_id}
+        module_lookup: Dict[str, Dict[str, str]] = {}
+
         for func_id, func_info in self.functions.items():
-            func_lookup[func_id] = func_id
-            func_lookup[func_info.name] = func_id
+            qualified_lookup[func_id] = func_id
             if func_info.component_id:
-                func_lookup[func_info.component_id] = func_id
-                method_name = func_info.component_id.split(".")[-1]
-                if method_name not in func_lookup:
-                    func_lookup[method_name] = func_id
-            # Add ReceiverType.MethodName key for method resolution
+                qualified_lookup[func_info.component_id] = func_id
+
+            # Build module-scoped lookup using the file's directory as module key
+            module_path = os.path.dirname(func_info.relative_path or func_info.file_path or "")
+            if module_path not in module_lookup:
+                module_lookup[module_path] = {}
+            module_lookup[module_path][func_info.name] = func_id
+
+            # Add ReceiverType.MethodName key (scoped to module)
             if func_info.class_name and func_info.name:
                 class_method_key = f"{func_info.class_name}.{func_info.name}"
-                if class_method_key not in func_lookup:
-                    func_lookup[class_method_key] = func_id
+                qualified_lookup[class_method_key] = func_id
+                module_lookup[module_path][class_method_key] = func_id
 
         for relationship in self.call_relationships:
             callee_name = relationship.callee
 
-            if callee_name in func_lookup:
-                relationship.callee = func_lookup[callee_name]
+            # 1. Try qualified/exact match first
+            if callee_name in qualified_lookup:
+                relationship.callee = qualified_lookup[callee_name]
                 relationship.is_resolved = True
-            elif "." in callee_name:
-                method_name = callee_name.split(".")[-1]
-                if method_name in func_lookup:
-                    relationship.callee = func_lookup[method_name]
+                continue
+
+            # 2. For dotted names, try Type.Method qualified, then module-scoped
+            if "." in callee_name:
+                # Try the short Type.Method form in qualified lookup
+                parts = callee_name.rsplit(".", 1)
+                short_key = f"{parts[0].split('.')[-1]}.{parts[1]}" if len(parts) == 2 else callee_name
+                if short_key in qualified_lookup:
+                    relationship.callee = qualified_lookup[short_key]
                     relationship.is_resolved = True
+                    continue
+
+            # 3. Module-scoped bare-name fallback: only match within caller's directory
+            caller_func = self.functions.get(relationship.caller)
+            if caller_func:
+                caller_module = os.path.dirname(caller_func.relative_path or caller_func.file_path or "")
+                module_funcs = module_lookup.get(caller_module, {})
+
+                # Try callee_name as-is in same module
+                if callee_name in module_funcs:
+                    relationship.callee = module_funcs[callee_name]
+                    relationship.is_resolved = True
+                    continue
+
+                # Try bare method name in same module (for dotted callees)
+                if "." in callee_name:
+                    bare_name = callee_name.split(".")[-1]
+                    if bare_name in module_funcs:
+                        relationship.callee = module_funcs[bare_name]
+                        relationship.is_resolved = True
+                        continue
 
     def _deduplicate_relationships(self):
         """

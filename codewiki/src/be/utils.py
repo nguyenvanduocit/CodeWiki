@@ -44,6 +44,9 @@ def is_complex_module(components: dict[str, any], core_component_ids: list[str])
 # ---------------------- Token Counting ---------------------
 # ------------------------------------------------------------
 
+# NOTE: Using GPT-4 tokenizer as an approximation for Claude token counting.
+# Claude uses a different tokenizer, so counts may differ by ~10-15%.
+# This affects clustering thresholds (max_token_per_module, max_token_per_leaf_module).
 enc = tiktoken.encoding_for_model("gpt-4")
 
 def count_tokens(text: str) -> int:

@@ -12,7 +12,6 @@ from codewiki.src.be.dependency_analyzer.models.core import Node
 
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 
 class DependencyParser:
@@ -129,10 +128,24 @@ class DependencyParser:
                         callee_component_id = comp_id
                         break
             if not callee_component_id:
+                # Module-scoped bare-name fallback: only match within the
+                # caller's directory to avoid false cross-package edges.
+                # In Go, common names like New/Run/Handle exist in many
+                # packages — global matching creates false dependency cycles.
+                caller_node = self.components.get(caller_component_id)
+                caller_dir = ""
+                if caller_node:
+                    caller_dir = os.path.dirname(
+                        caller_node.relative_path or caller_node.file_path or ""
+                    )
                 for comp_id, comp_node in self.components.items():
                     if comp_node.name == callee_id:
-                        callee_component_id = comp_id
-                        break
+                        comp_dir = os.path.dirname(
+                            comp_node.relative_path or comp_node.file_path or ""
+                        )
+                        if comp_dir == caller_dir:
+                            callee_component_id = comp_id
+                            break
             
             if caller_component_id and caller_component_id in self.components:
                 if callee_component_id:

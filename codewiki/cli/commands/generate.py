@@ -144,18 +144,6 @@ def parse_patterns(patterns_str: str) -> List[str]:
     help="Progressive generation: 1=analysis+tree, 2=+leaf docs, 3=+synthesis (0=full)",
 )
 @click.option(
-    "--with-debug-docs",
-    is_flag=True,
-    default=False,
-    help="Generate debug investigation runbooks ({module}_debug.md) for each module",
-)
-@click.option(
-    "--with-monitoring-docs",
-    is_flag=True,
-    default=False,
-    help="Generate monitoring specification notebooks ({module}_monitoring.md) for each module",
-)
-@click.option(
     "--only-debug-docs",
     is_flag=True,
     default=False,
@@ -187,8 +175,6 @@ def generate_command(
     analysis_only: bool,
     deep_analysis: bool,
     progressive: int,
-    with_debug_docs: bool,
-    with_monitoring_docs: bool,
     only_debug_docs: bool,
     only_monitoring_docs: bool,
 ):
@@ -241,6 +227,14 @@ def generate_command(
 
     # Suppress httpx INFO logs
     logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    # Validate mutually exclusive flag combinations
+    if analysis_only and deep_analysis:
+        raise click.UsageError("--analysis-only and --deep-analysis are mutually exclusive")
+    if analysis_only and (only_debug_docs or only_monitoring_docs):
+        raise click.UsageError("--analysis-only cannot be combined with --only-debug-docs or --only-monitoring-docs")
+    if (only_debug_docs or only_monitoring_docs) and deep_analysis:
+        raise click.UsageError("--only-debug-docs/--only-monitoring-docs cannot be combined with --deep-analysis")
 
     try:
         # Pre-generation checks
@@ -300,12 +294,19 @@ def generate_command(
 
         # Check for existing documentation
         if output_dir.exists() and list(output_dir.glob("*.md")):
-            if not click.confirm(
-                f"\n{output_dir} already contains documentation. Overwrite?",
-                default=True
-            ):
-                logger.info("Generation cancelled by user.")
-                sys.exit(EXIT_SUCCESS)
+            if no_cache:
+                # Force full regeneration: confirm before wiping cache
+                if not click.confirm(
+                    f"\n{output_dir} already contains documentation. Force full regeneration?",
+                    default=False
+                ):
+                    logger.info("Generation cancelled by user.")
+                    sys.exit(EXIT_SUCCESS)
+            else:
+                logger.info(
+                    f"\n{output_dir} already contains documentation. "
+                    "Only changed modules will be regenerated (incremental mode)."
+                )
 
         # Git branch creation (if requested)
         branch_name = None
@@ -412,8 +413,6 @@ def generate_command(
                 'analysis_only': analysis_only,
                 'deep_analysis': deep_analysis,
                 'progressive': progressive,
-                'with_debug_docs': with_debug_docs,
-                'with_monitoring_docs': with_monitoring_docs,
                 'only_debug_docs': only_debug_docs,
                 'only_monitoring_docs': only_monitoring_docs,
             },

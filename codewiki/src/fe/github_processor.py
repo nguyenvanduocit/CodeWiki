@@ -4,6 +4,7 @@ GitHub repository processing utilities.
 """
 
 import os
+import re
 import subprocess
 from typing import Dict
 from urllib.parse import urlparse
@@ -60,18 +61,23 @@ class GitHubRepoProcessor:
             
             # If specific commit is requested, don't use shallow clone
             if commit_id:
+                # Validate commit_id format (hex hash, 4-40 chars)
+                if not re.match(r'^[0-9a-fA-F]{4,40}$', commit_id):
+                    print(f"Invalid commit ID format: {commit_id}")
+                    return False
+
                 # Clone full repository to access specific commit
                 result = subprocess.run([
                     'git', 'clone', clone_url, target_dir
                 ], capture_output=True, text=True, timeout=WebAppConfig.CLONE_TIMEOUT)
-                
+
                 if result.returncode != 0:
                     print(f"Error cloning repository: {result.stderr}")
                     return False
-                
-                # Checkout specific commit
+
+                # Checkout specific commit (use -- to prevent argument injection)
                 result = subprocess.run([
-                    'git', 'checkout', commit_id
+                    'git', 'checkout', '--', commit_id
                 ], cwd=target_dir, capture_output=True, text=True, timeout=30)
                 
                 if result.returncode != 0:

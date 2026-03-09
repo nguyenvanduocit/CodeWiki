@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CodeWiki is an AI-powered documentation generator for large-scale codebases. It uses hierarchical decomposition and recursive multi-agent processing to generate holistic documentation across 8 programming languages (Python, Java, JavaScript, TypeScript, C, C++, C#, Go).
+CodeWiki is an AI-powered documentation generator for large-scale codebases. It uses hierarchical decomposition and recursive multi-agent processing to generate holistic documentation across 10 programming languages (Python, Java, JavaScript, TypeScript, C, C++, C#, Go, PHP, Vue).
 
 ## Common Commands
 
@@ -92,7 +92,7 @@ Hierarchical Decomposition (cluster_modules.py)
       ↓
 Module Tree
       ↓
-Recursive Agent Processing (agent_orchestrator.py)
+Recursive Agent Processing (claude_agent_sdk_adapter.py)
       ↓
 Documentation Output (Markdown + Visual artifacts)
 ```
@@ -110,10 +110,10 @@ Documentation Output (Markdown + Visual artifacts)
 - Groups components into coherent modules when token count exceeds thresholds
 - Configurable via `max_token_per_module` and `max_depth`
 
-**3. Agent System** (`codewiki/src/be/agent_orchestrator.py`)
-- Uses pydantic-ai for agent orchestration
-- Dynamic delegation: complex modules get `generate_sub_module_documentation_tool`
-- Leaf modules get simpler processing with just `read_code_components_tool` and `str_replace_editor_tool`
+**3. Agent System** (`codewiki/src/be/claude_agent_sdk_adapter.py`)
+- Uses Claude Agent SDK for agent orchestration
+- Supports standard and deep multi-agent analysis (3 parallel analyzers + composer + verifier)
+- Handles module processing, debug notebooks, and monitoring notebooks
 
 **4. CLI** (`codewiki/cli/`)
 - `commands/config.py`: API configuration management (stores keys in system keychain)
@@ -165,9 +165,9 @@ LANGUAGE_ANALYZERS = {
 |---------|------|
 | CLI entry | `codewiki/cli/main.py` |
 | Config model | `codewiki/src/config.py` |
-| Agent orchestration | `codewiki/src/be/agent_orchestrator.py` |
+| Agent orchestration | `codewiki/src/be/claude_agent_sdk_adapter.py` |
+| Documentation generator | `codewiki/src/be/documentation_generator.py` |
 | Module clustering | `codewiki/src/be/cluster_modules.py` |
-| LLM services | `codewiki/src/be/llm_services.py` |
 | Prompt templates | `codewiki/src/be/prompt_template.py` |
 | Language analyzers | `codewiki/src/be/dependency_analyzer/analyzers/` |
 | Agent tools | `codewiki/src/be/agent_tools/` |

@@ -498,21 +498,27 @@ Evaluate the documentation on these criteria:
    - Weasel words ("some", "many", "various")
    - Sentences over 25 words
 
-Provide your evaluation as:
+Respond with ONLY a JSON object (no markdown fencing, no extra text) in this exact format:
 
-<VERIFICATION>
-<SCORE>0-100</SCORE>
-<NEEDS_REVISION>true/false</NEEDS_REVISION>
-<ISSUES>
-- [TRUTHFULNESS] List any hallucinated component names
-- [EVIDENCE] Sections lacking path:line references
-- [COMPLETENESS] Missing required sections
-- [QUALITY] Specific writing quality issues with line references
-</ISSUES>
-<REVISION_INSTRUCTIONS>
-Specific, actionable instructions for improving the documentation. Reference exact sections and what to fix.
-</REVISION_INSTRUCTIONS>
-</VERIFICATION>
+{{
+  "score": <0-100>,
+  "needs_revision": <true/false>,
+  "tasks": [
+    {{
+      "type": "<TRUTHFULNESS|EVIDENCE|COMPLETENESS|QUALITY>",
+      "section": "<which section of the doc>",
+      "description": "<specific, actionable description of what to fix>"
+    }}
+  ]
+}}
+
+Rules:
+- If the documentation passes all criteria, set "needs_revision" to false and "tasks" to an empty array.
+- Each task must be specific and actionable — reference exact section names and what is wrong.
+- For TRUTHFULNESS tasks, include the hallucinated component name in the description.
+- For EVIDENCE tasks, specify which section lacks `path:line` references.
+- For COMPLETENESS tasks, specify which required section is missing.
+- For QUALITY tasks, quote the problematic text and explain the fix.
 """.strip()
 
 CODEBASE_MAP_PROMPT = """

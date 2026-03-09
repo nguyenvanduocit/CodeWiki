@@ -49,7 +49,8 @@ class PythonASTAnalyzer(ast.NodeVisitor):
                     path = path[:-len(ext)]
                     break
             return path.replace('/', '.').replace('\\', '.')
-        except:
+        except Exception:
+            logger.debug(f"Failed to compute module path for {self.file_path}, using fallback")
             return str(self.file_path).replace('/', '.').replace('\\', '.')
     
     def _get_component_id(self, name: str) -> str:

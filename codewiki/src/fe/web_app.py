@@ -12,6 +12,7 @@ Features:
 
 import argparse
 from fastapi import FastAPI, Request, Form
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from .cache_manager import CacheManager
@@ -22,8 +23,16 @@ from .config import WebAppConfig
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="CodeWiki", 
+    title="CodeWiki",
     description="Generate comprehensive documentation for any GitHub repository"
+)
+
+# CORS middleware - restrict to localhost by default
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 
 # Initialize components

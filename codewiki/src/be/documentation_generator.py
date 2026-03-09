@@ -40,11 +40,12 @@ logger = logging.getLogger(__name__)
 class DocumentationGenerator:
     """Main documentation generation orchestrator."""
 
-    def __init__(self, config: Config, commit_id: str = None):
+    def __init__(self, config: Config, commit_id: Optional[str] = None):
         self.config = config
         self.commit_id = commit_id
         self.graph_builder = DependencyGraphBuilder(config)
         self.module_summaries: Dict[str, str] = {}
+        self.module_deps: Dict[str, set] = {}
 
     # ── Metadata (pipeline state) ──
 
@@ -255,9 +256,13 @@ class DocumentationGenerator:
         tree_order = self.get_processing_order(module_tree)
 
         # Build a lookup: module_name -> (path, name) from tree order
+        # Use "/".join(path+[name]) as key to handle duplicate names at different tree levels
         tree_order_lookup: Dict[str, tuple[List[str], str]] = {}
+        name_to_key: Dict[str, str] = {}  # bare name -> full key (last occurrence wins for backward compat)
         for path, name in tree_order:
-            tree_order_lookup[name] = (path, name)
+            full_key = "/".join(path + [name]) if path else name
+            tree_order_lookup[full_key] = (path, name)
+            name_to_key[name] = full_key
 
         # Kahn's algorithm for topological sort (dependencies first)
         # in_degree = how many deps each module has
@@ -319,9 +324,10 @@ class DocumentationGenerator:
         processing_order: List[tuple[List[str], str]] = []
         seen = set()
         for name in sorted_names:
-            if name in tree_order_lookup and name not in seen:
+            key = name_to_key.get(name, name)
+            if key in tree_order_lookup and name not in seen:
                 seen.add(name)
-                processing_order.append(tree_order_lookup[name])
+                processing_order.append(tree_order_lookup[key])
 
         # Ensure any modules from tree_order that weren't in module_deps are included
         for path, name in tree_order:
@@ -589,6 +595,11 @@ class DocumentationGenerator:
                                 dependency_context=dependency_context,
                             )
                         continue
+
+                    # Remove stale docs so agent adapter doesn't skip
+                    if os.path.exists(docs_path):
+                        logger.info(f"Removing stale docs for changed module: {module_name}")
+                        os.remove(docs_path)
 
                     if self.is_leaf_module(module_info):
                         logger.info(f"Processing leaf module: {module_key}")

@@ -181,8 +181,10 @@ async def serve_doc(filename: str):
         raise HTTPException(status_code=500, detail=f"Error reading {filename}: {e}")
 
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="."), name="static")
+# Mount static files — serve only from a dedicated static directory (not CWD)
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 def main():

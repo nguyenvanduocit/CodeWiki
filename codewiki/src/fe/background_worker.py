@@ -5,33 +5,38 @@ Background worker for processing documentation generation jobs.
 
 import os
 import json
+import logging
+import shutil
 import time
 import threading
-import subprocess
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from queue import Queue
+from queue import Queue, Full
 from typing import Dict
 from dataclasses import asdict
 
 from codewiki.src.be.documentation_generator import DocumentationGenerator
-from codewiki.src.config import Config, MAIN_MODEL
+from codewiki.src.config import Config
 from .models import JobStatus
 from .cache_manager import CacheManager
 from .github_processor import GitHubRepoProcessor
 from .config import WebAppConfig
 from codewiki.src.utils import file_manager
 
+logger = logging.getLogger(__name__)
+
+
 class BackgroundWorker:
     """Background worker for processing documentation generation jobs."""
-    
+
     def __init__(self, cache_manager: CacheManager, temp_dir: str = None):
         self.cache_manager = cache_manager
         self.temp_dir = temp_dir or WebAppConfig.TEMP_DIR
         self.running = False
         self.processing_queue = Queue(maxsize=WebAppConfig.QUEUE_SIZE)
         self.job_status: Dict[str, JobStatus] = {}
+        self._job_lock = threading.Lock()
         self.jobs_file = Path(WebAppConfig.CACHE_DIR) / "jobs.json"
         self.load_job_statuses()
     
@@ -48,17 +53,25 @@ class BackgroundWorker:
         self.running = False
     
     def add_job(self, job_id: str, job: JobStatus):
-        """Add a job to the processing queue."""
-        self.job_status[job_id] = job
-        self.processing_queue.put(job_id)
-    
+        """Add a job to the processing queue. Raises Full if queue is at capacity."""
+        with self._job_lock:
+            self.job_status[job_id] = job
+        self.processing_queue.put_nowait(job_id)
+
+    def upsert_job(self, job_id: str, job: JobStatus):
+        """Thread-safe insert/update of a job status without queueing."""
+        with self._job_lock:
+            self.job_status[job_id] = job
+
     def get_job_status(self, job_id: str) -> JobStatus:
         """Get job status by ID."""
-        return self.job_status.get(job_id)
-    
+        with self._job_lock:
+            return self.job_status.get(job_id)
+
     def get_all_jobs(self) -> Dict[str, JobStatus]:
-        """Get all job statuses."""
-        return self.job_status
+        """Get a snapshot of all job statuses."""
+        with self._job_lock:
+            return dict(self.job_status)
     
     def load_job_statuses(self):
         """Load job statuses from disk."""
@@ -172,8 +185,8 @@ class BackgroundWorker:
             job.status = 'processing'
             job.started_at = datetime.now()
             job.progress = "Starting repository clone..."
-            job.main_model = MAIN_MODEL
-            
+            job.main_model = 'opus'
+
             # Check cache first
             cached_docs = self.cache_manager.get_cached_docs(job.repo_url)
             if cached_docs and Path(cached_docs).exists():
@@ -182,7 +195,7 @@ class BackgroundWorker:
                 job.docs_path = cached_docs
                 job.progress = "Documentation retrieved from cache"
                 if not job.main_model:  # Only set if not already set
-                    job.main_model = MAIN_MODEL
+                    job.main_model = 'opus'
                 
                 # Save job status to disk
                 self.save_job_statuses()
@@ -251,6 +264,6 @@ class BackgroundWorker:
             # Cleanup temporary repository
             if 'temp_repo_dir' in locals() and os.path.exists(temp_repo_dir):
                 try:
-                    subprocess.run(['rm', '-rf', temp_repo_dir], check=True)
+                    shutil.rmtree(temp_repo_dir, ignore_errors=True)
                 except Exception as e:
-                    print(f"Failed to cleanup temp directory: {e}")
+                    logger.warning(f"Failed to cleanup temp directory: {e}")

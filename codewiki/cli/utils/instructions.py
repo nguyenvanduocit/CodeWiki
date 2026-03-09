@@ -99,55 +99,6 @@ def display_post_generation_instructions(
         #     tokens = statistics['total_tokens_used']
         #     click.echo(f"  Tokens used:       ~{tokens:,}")
         click.echo()
-    
-    # Next steps
-    click.secho("Next steps:", fg="cyan", bold=True)
-    click.echo()
-    
-    click.echo("1. Review the generated documentation:")
-    click.echo(f"   cat {output_dir}/overview.md")
-    if github_pages:
-        click.echo(f"   open {output_dir}/index.html  # View in browser")
-    click.echo()
-    
-    if branch_name:
-        # Git workflow with branch
-        click.echo("2. Push the documentation branch:")
-        click.secho(f"   git push origin {branch_name}", fg="yellow")
-        click.echo()
-        
-        if repo_url:
-            pr_url = get_pr_creation_url(repo_url, branch_name)
-            click.echo("3. Create a Pull Request to merge documentation:")
-            click.secho(f"   {pr_url}", fg="blue")
-            click.echo()
-            
-            click.echo("4. After merge, enable GitHub Pages:")
-        else:
-            click.echo("3. Enable GitHub Pages:")
-    else:
-        # Direct commit workflow
-        click.echo("2. Commit the documentation:")
-        click.secho("   git add docs/", fg="yellow")
-        click.secho('   git commit -m "Add generated documentation"', fg="yellow")
-        click.echo()
-        
-        click.echo("3. Push to GitHub:")
-        click.secho("   git push origin main", fg="yellow")
-        click.echo()
-        
-        click.echo("4. Enable GitHub Pages:")
-    
-    click.echo("   - Go to repository Settings → Pages")
-    click.echo("   - Source: Deploy from a branch")
-    click.echo("   - Branch: main, folder: /docs")
-    click.echo()
-    
-    if repo_url:
-        github_pages_url = compute_github_pages_url(repo_url, repo_name)
-        click.echo("5. Your documentation will be available at:")
-        click.secho(f"   {github_pages_url}", fg="blue", bold=True)
-        click.echo()
 
 
 def display_generation_summary(

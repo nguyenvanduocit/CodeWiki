@@ -3,11 +3,10 @@
 FastAPI route handlers for the CodeWiki web application.
 """
 
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from dataclasses import asdict
-
-from traceback import format_exc
 
 from fastapi import Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -22,9 +21,12 @@ from .config import WebAppConfig
 from codewiki.src.utils import file_manager
 
 
+logger = logging.getLogger(__name__)
+
+
 class WebRoutes:
     """Handles all web routes for the application."""
-    
+
     def __init__(self, background_worker: BackgroundWorker, cache_manager: CacheManager):
         self.background_worker = background_worker
         self.cache_manager = cache_manager
@@ -112,7 +114,7 @@ class WebRoutes:
                         progress="Retrieved from cache",
                         commit_id=commit_id if commit_id else None
                     )
-                    self.background_worker.job_status[job_id] = job
+                    self.background_worker.upsert_job(job_id, job)
                 else:
                     # Add to queue
                     try:
@@ -124,14 +126,15 @@ class WebRoutes:
                             progress="Waiting in queue...",
                             commit_id=commit_id if commit_id else None
                         )
-                        
+
                         self.background_worker.add_job(job_id, job)
                         message = f"Repository added to processing queue! Job ID: {job_id}"
                         message_type = "success"
                         repo_url = ""  # Clear form
-                        
+
                     except Exception as e:
-                        message = f"Failed to add repository to queue: {str(e)}\n{format_exc()}"
+                        logger.exception("Failed to add repository to queue")
+                        message = "Failed to add repository to queue. Please try again later."
                         message_type = "error"
         
         # Get recent jobs (last 10)
@@ -211,7 +214,7 @@ class WebRoutes:
                     progress="Loaded from cache",
                     commit_id=None  # No commit info available from cache
                 )
-                self.background_worker.job_status[job_id] = job
+                self.background_worker.upsert_job(job_id, job)
                 self.background_worker.save_job_statuses()
             else:
                 raise HTTPException(status_code=404, detail="Documentation not found")
@@ -237,8 +240,10 @@ class WebRoutes:
             except Exception:
                 pass
         
-        # Serve the requested file
-        file_path = docs_path / filename
+        # Serve the requested file (with path traversal protection)
+        file_path = (docs_path / filename).resolve()
+        if not str(file_path).startswith(str(docs_path.resolve())):
+            raise HTTPException(status_code=403, detail="Access denied")
         if not file_path.exists():
             raise HTTPException(status_code=404, detail=f"File {filename} not found")
         
@@ -265,7 +270,8 @@ class WebRoutes:
             return HTMLResponse(content=render_template(DOCS_VIEW_TEMPLATE, context))
             
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error reading {filename}: {e}\n{format_exc()}")
+            logger.exception(f"Error reading {filename}")
+            raise HTTPException(status_code=500, detail=f"Error reading {filename}")
     
     def _normalize_github_url(self, url: str) -> str:
         """Normalize GitHub URL for consistent comparison."""

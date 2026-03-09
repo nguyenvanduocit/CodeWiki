@@ -140,9 +140,8 @@ async def cluster_modules(
                 else:
                     logger.warning(f"Skipping invalid sub leaf node '{node}' in module '{module_name}' - not found in components")
 
-        current_module_path.append(module_name)
+        child_path = current_module_path + [module_name]
         module_info["children"] = {}
-        module_info["children"] = await cluster_modules(valid_sub_leaf_nodes, components, config, call_llm_fn, current_module_tree, module_name, current_module_path)
-        current_module_path.pop()
+        module_info["children"] = await cluster_modules(valid_sub_leaf_nodes, components, config, call_llm_fn, current_module_tree, module_name, child_path)
 
     return module_tree

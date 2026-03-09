@@ -38,6 +38,8 @@ from codewiki.src.utils import file_manager
 
 logger = logging.getLogger(__name__)
 
+MAX_VERIFICATION_ATTEMPTS = 3
+
 
 async def agent_sdk_call_llm(
     prompt: str,
@@ -80,6 +82,132 @@ async def agent_sdk_call_llm(
         raise ValueError("Claude Agent SDK returned no content")
 
     return result
+
+
+def _parse_verifier_json(raw: str) -> dict:
+    """Parse verifier response as JSON, handling markdown fencing."""
+    text = raw.strip()
+    # Strip markdown code fences if present
+    if text.startswith("```"):
+        first_newline = text.index("\n")
+        last_fence = text.rfind("```")
+        text = text[first_newline + 1:last_fence].strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning(f"Failed to parse verifier JSON, raw output: {text[:500]}")
+        return {"score": 0, "needs_revision": False, "tasks": []}
+
+
+async def _verify_and_fix_loop(
+    module_name: str,
+    docs_path: str,
+    component_list: str,
+    config: Config,
+    model: str | None = None,
+    max_attempts: int = MAX_VERIFICATION_ATTEMPTS,
+) -> None:
+    """
+    Verify documentation quality and iteratively fix issues.
+
+    Runs the verifier up to max_attempts times. If the verifier returns
+    a task list with needs_revision=True, a revision agent is dispatched
+    to fix the issues. The loop continues until the verifier approves
+    or max_attempts is exhausted.
+    """
+    for attempt in range(1, max_attempts + 1):
+        if not os.path.exists(docs_path):
+            logger.warning(f"Docs file not found at {docs_path}, skipping verification")
+            return
+
+        doc_content = file_manager.load_text(docs_path)
+        if not doc_content:
+            logger.warning(f"Empty docs at {docs_path}, skipping verification")
+            return
+
+        logger.info(f"Verification attempt {attempt}/{max_attempts} for {module_name}")
+
+        try:
+            verifier_prompt = VERIFIER_PROMPT.format(
+                module_name=module_name,
+                documentation_content=doc_content[:50000],
+                component_list=component_list,
+            )
+            raw_response = await agent_sdk_call_llm(verifier_prompt, config)
+            result = _parse_verifier_json(raw_response)
+        except Exception as e:
+            logger.warning(f"Verification call failed for {module_name}: {e}")
+            return
+
+        score = result.get("score", 0)
+        needs_revision = result.get("needs_revision", False)
+        tasks = result.get("tasks", [])
+
+        logger.info(f"Verification score for {module_name}: {score}/100 "
+                     f"(needs_revision={needs_revision}, tasks={len(tasks)})")
+
+        if not needs_revision or not tasks:
+            logger.info(f"Verifier approved documentation for {module_name}")
+            return
+
+        # Format task list for the revision agent
+        task_lines = []
+        for i, task in enumerate(tasks, 1):
+            t_type = task.get("type", "UNKNOWN")
+            t_section = task.get("section", "")
+            t_desc = task.get("description", "")
+            task_lines.append(f"{i}. [{t_type}] Section: \"{t_section}\" — {t_desc}")
+        task_list_text = "\n".join(task_lines)
+
+        logger.info(f"Dispatching revision agent for {module_name} "
+                     f"(attempt {attempt}/{max_attempts}, {len(tasks)} tasks)")
+
+        # Dispatch revision agent with structured task list
+        revision_system = f"""You are a documentation editor. Revise the documentation for **{module_name}** based on the verifier's task list.
+
+{CLAUDE_CODE_TOOLS_SECTION}
+
+Read the existing documentation, fix each task listed below, and write the improved version back to the same file. Verify claims against actual source code."""
+
+        revision_user = f"""Revise the documentation at {os.path.abspath(docs_path)}
+
+<TASK_LIST>
+{task_list_text}
+</TASK_LIST>
+
+<REPOSITORY_PATH>
+{os.path.abspath(config.repo_path)}
+</REPOSITORY_PATH>
+
+Fix every task in the list. For each task:
+- TRUTHFULNESS: verify component names against source code, remove or correct hallucinated names
+- EVIDENCE: add `path/file.ext:line_number` references to the specified sections
+- COMPLETENESS: add the missing sections with proper content
+- QUALITY: rewrite the quoted text following the style rules
+
+After fixing all tasks, save the updated documentation to the same file path.
+"""
+
+        revision_options = ClaudeAgentOptions(
+            permission_mode="bypassPermissions",
+            cwd=os.path.abspath(config.repo_path),
+            system_prompt=revision_system,
+            model=model or config.main_model or "opus",
+        )
+
+        try:
+            async for message in query(prompt=revision_user, options=revision_options):
+                if isinstance(message, ResultMessage):
+                    if message.is_error:
+                        logger.warning(f"Revision agent error for {module_name}: {message.result}")
+                    else:
+                        logger.info(f"Revision completed for {module_name} "
+                                    f"(attempt {attempt}, cost=${message.total_cost_usd or 0:.4f})")
+        except Exception as e:
+            logger.warning(f"Revision agent failed for {module_name}: {e}")
+            return
+
+    logger.warning(f"Verification loop exhausted for {module_name} after {max_attempts} attempts")
 
 
 async def agent_sdk_process_module(
@@ -202,6 +330,16 @@ Instructions:
                 raise RuntimeError(f"Agent SDK failed for module {module_name}: {message.result}")
             logger.info(f"Agent SDK ({model_name or 'unknown'}): completed {module_name} "
                         f"(turns={message.num_turns}, cost=${message.total_cost_usd or 0:.4f})")
+
+    # Verify and fix loop for standard mode
+    docs_path = os.path.join(working_dir, f"{module_name}.md")
+    await _verify_and_fix_loop(
+        module_name=module_name,
+        docs_path=docs_path,
+        component_list=component_list,
+        config=config,
+        model=model,
+    )
 
     # Reload module tree (Claude Code may not have modified it, but docs should exist now)
     if os.path.exists(module_tree_path):
@@ -419,77 +557,15 @@ Instructions:
                 raise RuntimeError(f"Composer failed for {module_name}: {message.result}")
             logger.info(f"Composer completed for {module_name} (turns={message.num_turns}, cost=${message.total_cost_usd or 0:.4f})")
 
-    # Phase 3: Verifier checks quality (simple LLM call, no tools)
-    if os.path.exists(docs_path):
-        logger.info(f"Deep analysis Phase 3: verifying documentation for {module_name}")
-        try:
-            doc_content = file_manager.load_text(docs_path)
-            verifier_prompt = VERIFIER_PROMPT.format(
-                module_name=module_name,
-                documentation_content=doc_content[:50000],  # Truncate if too long
-                component_list=component_list,
-            )
-
-            verification = await agent_sdk_call_llm(verifier_prompt, config)
-
-            verification_lower = verification.lower()
-
-            if "<needs_revision>true</needs_revision>" in verification_lower:
-                logger.info(f"Verifier requested revision for {module_name}")
-                # Extract revision instructions (case-insensitive)
-                ri_start_tag = "<revision_instructions>"
-                ri_end_tag = "</revision_instructions>"
-                if ri_start_tag in verification_lower:
-                    ri_start = verification_lower.index(ri_start_tag) + len(ri_start_tag)
-                    ri_end = verification_lower.index(ri_end_tag)
-                    revision_text = verification[ri_start:ri_end].strip()
-
-                    # One revision pass: send instructions back to a revision agent
-                    revision_system = f"""You are a documentation editor. Revise the documentation for **{module_name}** based on the verifier's feedback.
-
-{CLAUDE_CODE_TOOLS_SECTION}
-
-Read the existing documentation, apply the revision instructions, and write the improved version back to the same file."""
-
-                    revision_user = f"""Revise the documentation at {os.path.abspath(docs_path)}
-
-<REVISION_INSTRUCTIONS>
-{revision_text}
-</REVISION_INSTRUCTIONS>
-
-<REPOSITORY_PATH>
-{os.path.abspath(config.repo_path)}
-</REPOSITORY_PATH>
-
-Read the existing doc, verify claims against source code, apply the revisions, and overwrite the file.
-"""
-                    revision_options = ClaudeAgentOptions(
-                        permission_mode="bypassPermissions",
-                        cwd=os.path.abspath(config.repo_path),
-                        system_prompt=revision_system,
-                        model=model or config.main_model or "opus",
-                    )
-
-                    async for message in query(prompt=revision_user, options=revision_options):
-                        if isinstance(message, ResultMessage):
-                            if message.is_error:
-                                logger.warning(f"Revision agent error: {message.result}")
-                            else:
-                                logger.info(f"Revision completed for {module_name} (cost=${message.total_cost_usd or 0:.4f})")
-            else:
-                logger.info(f"Verifier approved documentation for {module_name}")
-
-            # Extract and log score (case-insensitive)
-            score_tag = "<score>"
-            score_end_tag = "</score>"
-            if score_tag in verification_lower:
-                s_start = verification_lower.index(score_tag) + len(score_tag)
-                s_end = verification_lower.index(score_end_tag)
-                score = verification[s_start:s_end].strip()
-                logger.info(f"Verification score for {module_name}: {score}/100")
-
-        except Exception as e:
-            logger.warning(f"Verification failed for {module_name}, keeping composed doc: {e}")
+    # Phase 3: Verify and fix loop (shared with standard mode)
+    logger.info(f"Deep analysis Phase 3: verifying documentation for {module_name}")
+    await _verify_and_fix_loop(
+        module_name=module_name,
+        docs_path=docs_path,
+        component_list=component_list,
+        config=config,
+        model=model,
+    )
 
     # Cleanup analysis temp files (optional, keep for debugging)
     # shutil.rmtree(analysis_dir, ignore_errors=True)

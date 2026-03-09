@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import tempfile
@@ -93,8 +94,8 @@ def clone_repository(github_url: str) -> str:
                     capture_output=True,
                     text=True,
                 )
-            except:
-                pass
+            except Exception as e:
+                logging.debug(f"Optional git config (core.longpaths) failed: {e}")
 
         subprocess.run(
             [
@@ -149,8 +150,8 @@ def clone_repository(github_url: str) -> str:
                     capture_output=True,
                     text=True,
                 )
-            except:
-                pass
+            except Exception as e:
+                logging.debug(f"Optional git config (sparse checkout) failed: {e}")
         return temp_dir
     except subprocess.TimeoutExpired:
         if os.path.exists(temp_dir):
