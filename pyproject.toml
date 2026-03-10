@@ -4,30 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codewiki"
-version = "1.0.1"
-description = "Transform codebases into comprehensive documentation using AI-powered analysis"
+version = "2.0.0"
+description = "Static analysis for codebases — dependency graphs, metrics, and architectural reports"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
     {name = "CodeWiki Contributors"}
 ]
-keywords = ["documentation", "code-analysis", "ai", "llm", "developer-tools"]
+keywords = ["code-analysis", "static-analysis", "dependency-graph", "developer-tools"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
-    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Quality Assurance",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
 dependencies = [
     "click>=8.1.0",
-    "keyring>=24.0.0",
-    "GitPython>=3.1.40",
-    "Jinja2>=3.1.6",
     "tree-sitter>=0.25.0",
     "tree-sitter-language-pack>=0.8.0",
     "tree-sitter-python>=0.23.6",
@@ -40,26 +37,11 @@ dependencies = [
     "tree-sitter-php>=0.23.0",
     "tree-sitter-go>=0.23.4",
     "pydantic>=2.11.7",
-    "pydantic-settings>=2.10.1",
-    "requests>=2.32.4",
-    "rich>=14.1.0",
     "networkx>=3.5",
-    "psutil>=7.0.0",
-    "PyYAML>=6.0.2",
-    "mermaid-parser-py>=0.0.2",
-    "mermaid-py>=0.8.0",
-    "claude-agent-sdk>=0.1.0",
     "python-louvain>=0.16",
     "scikit-learn>=1.3.0",
     "lizard>=1.17.0",
     "radon>=6.0.0",
-    "diskcache>=5.6.0"
-]
-
-[external]
-# Node.js is required for mermaid-py which validates mermaid diagrams in generated documentation
-build-requires = [
-    { name = "nodejs", version = ">=14.0.0" }
 ]
 
 [project.optional-dependencies]
@@ -77,30 +59,26 @@ codewiki = "codewiki.cli.main:cli"
 
 [project.urls]
 Homepage = "https://github.com/yourusername/codewiki"
-Documentation = "https://github.com/yourusername/codewiki/docs"
 Repository = "https://github.com/yourusername/codewiki"
 Issues = "https://github.com/yourusername/codewiki/issues"
 
 [tool.setuptools]
 packages = [
-    "codewiki", 
-    "codewiki.cli", 
-    "codewiki.cli.commands", 
-    "codewiki.cli.models", 
-    "codewiki.cli.utils", 
-    "codewiki.cli.adapters",
-    "codewiki.src",
-    "codewiki.src.be",
-    "codewiki.src.be.dependency_analyzer",
-    "codewiki.src.be.dependency_analyzer.analysis",
-    "codewiki.src.be.dependency_analyzer.analyzers",
-    "codewiki.src.be.dependency_analyzer.models",
-    "codewiki.src.be.dependency_analyzer.utils",
-    "codewiki.src.fe"
+    "codewiki",
+    "codewiki.cli",
+    "codewiki.cli.commands",
+    "codewiki.cli.models",
+    "codewiki.cli.utils",
+    "codewiki.analyzer",
+    "codewiki.analyzer.analysis",
+    "codewiki.analyzer.languages",
+    "codewiki.analyzer.models",
+    "codewiki.analyzer.utils",
+    "codewiki.reporting",
 ]
 
 [tool.setuptools.package-data]
-codewiki = ["templates/**/*", "py.typed", "src/be/dependency_analyzer/queries/*.scm"]
+codewiki = ["py.typed", "analyzer/queries/*.scm"]
 
 [tool.black]
 line-length = 100
@@ -124,4 +102,3 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --cov=codewiki --cov-report=term-missing"
 asyncio_mode = "auto"
-
