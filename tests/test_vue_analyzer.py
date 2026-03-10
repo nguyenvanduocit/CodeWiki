@@ -1,4 +1,4 @@
-from codewiki.src.be.dependency_analyzer.analyzers.vue import TreeSitterVueAnalyzer, analyze_vue_file
+from codewiki.analyzer.languages.vue import TreeSitterVueAnalyzer, analyze_vue_file
 
 
 SIMPLE_VUE_SFC = """<template>

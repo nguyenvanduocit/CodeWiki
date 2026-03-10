@@ -4,13 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CodeWiki is an AI-powered documentation generator for large-scale codebases. It uses hierarchical decomposition and recursive multi-agent processing to generate holistic documentation across 10 programming languages (Python, Java, JavaScript, TypeScript, C, C++, C#, Go, PHP, Vue).
+CodeWiki is a static analysis CLI tool for codebases. It parses source code using tree-sitter AST analysis across 10 languages (Python, Java, JavaScript, TypeScript, C, C++, C#, Go, PHP, Vue), builds dependency graphs, computes metrics, and generates architectural reports.
 
 ## Common Commands
 
 ### Development Setup
 ```bash
-# Create virtual environment and install
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -19,144 +18,101 @@ pip install -r requirements.txt
 
 ### Running Tests
 ```bash
-# Run all tests
 pytest
-
-# Run specific test file
-pytest tests/test_dependency_analyzer.py
-
-# Run with coverage
+pytest tests/test_vue_analyzer.py
 pytest --cov=codewiki tests/
 ```
 
 ### Code Quality
 ```bash
-# Format code
 black codewiki/
-
-# Type check
 mypy codewiki/
-
-# Lint
 ruff check codewiki/
 ```
 
 ### Running the CLI
 ```bash
-# After pip install -e ., the codewiki command is available
 codewiki --version
 
-# Configure API settings
-codewiki config set \
-  --api-key YOUR_KEY \
-  --base-url https://api.anthropic.com \
-  --main-model claude-sonnet-4 \
-  --cluster-model claude-sonnet-4 \
-  --fallback-model glm-4p5
+# Configure file patterns
+codewiki config agent --include "*.cs" --exclude "*Tests*"
 
-# Generate documentation for a repository
+# Run static analysis
 codewiki generate --verbose
-
-# Generate with custom patterns
-codewiki generate --include "*.cs" --exclude "Tests,Specs"
+codewiki generate -o analysis_output --include "*.py"
 ```
 
-### Running the Web App
-```bash
-# Start the FastAPI web application
-python -m codewiki.run_web_app
-
-# Or via uvicorn directly
-uvicorn codewiki.src.fe.web_app:app --reload
-```
-
-### Docker
-```bash
-# Build and run with Docker Compose
-cd docker
-cp env.example .env
-# Edit .env with your configuration
-docker-compose up --build
-```
-
-## High-Level Architecture
-
-### Core Pipeline
+## Architecture
 
 ```
 Repository Input
       ↓
 Dependency Analysis (AST parsing → Call graph)
       ↓
-Hierarchical Decomposition (cluster_modules.py)
+Graph Metrics (PageRank, betweenness, communities, complexity)
       ↓
-Module Tree
-      ↓
-Recursive Agent Processing (claude_agent_sdk_adapter.py)
-      ↓
-Documentation Output (Markdown + Visual artifacts)
+Reports (codebase_map.json + interactive graph.html)
+```
+
+### Directory Structure
+
+```
+codewiki/
+├── config.py                 # Config dataclass
+├── utils.py                  # FileManager for I/O
+├── cli/                      # CLI layer (Click)
+│   ├── main.py               # CLI entry point
+│   ├── commands/
+│   │   ├── config.py         # `codewiki config` commands
+│   │   └── generate.py       # `codewiki generate` command
+│   ├── config_manager.py     # ~/.codewiki/config.json persistence
+│   ├── models/config.py      # Configuration + AgentInstructions dataclasses
+│   └── utils/                # errors, fs, logging, validation, repo_validator
+├── analyzer/                 # Core static analysis engine
+│   ├── ast_parser.py         # Entry point — DependencyParser
+│   ├── dependency_graphs_builder.py  # Orchestrates full analysis pipeline
+│   ├── topo_sort.py          # Graph algorithms (topo sort, cycle detection)
+│   ├── query_analyzer.py     # Tree-sitter query-based analysis
+│   ├── languages/            # Language-specific analyzers (10 languages)
+│   ├── analysis/             # AnalysisService, CallGraphAnalyzer, RepoAnalyzer, cloning
+│   ├── models/               # Node, CallRelationship, Repository, AnalysisResult
+│   └── utils/                # patterns, security, logging_config
+└── reporting/                # Output generation
+    ├── arch_rules.py         # Architectural rule validation
+    ├── codebase_map_generator.py  # codebase_map.json output
+    ├── graph_viewer_generator.py  # Interactive D3.js graph.html
+    ├── graph_metrics.py      # PageRank, fan-in/out, communities
+    ├── complexity_scorer.py  # Cyclomatic + cognitive complexity
+    ├── temporal_coupling.py  # Git history co-change analysis
+    └── tfidf_keywords.py     # TF-IDF keyword extraction
 ```
 
 ### Key Components
 
-**1. Dependency Analysis** (`codewiki/src/be/dependency_analyzer/`)
-- `ast_parser.py`: Entry point for parsing repositories
-- `analyzers/`: Language-specific analyzers (python.py, java.py, typescript.py, etc.)
-- `analysis_service.py`: Orchestrates structure and call graph analysis
-- Uses tree-sitter for multi-language AST parsing
+**Analyzer** (`codewiki/analyzer/`) — the core engine:
+- `DependencyParser` parses a repository into `Node` components via tree-sitter
+- `CallGraphAnalyzer` dispatches to language-specific analyzers
+- `DependencyGraphBuilder` orchestrates: parse → build graph → compute metrics → save
 
-**2. Module Clustering** (`codewiki/src/be/cluster_modules.py`)
-- Hierarchical decomposition using LLM-based clustering
-- Groups components into coherent modules when token count exceeds thresholds
-- Configurable via `max_token_per_module` and `max_depth`
+**Reporting** (`codewiki/reporting/`) — output generators:
+- `generate_codebase_map()` produces `codebase_map.json` with all nodes, edges, metrics
+- `generate_graph_viewer()` produces self-contained `graph.html` with D3.js visualization
+- `evaluate_rules()` detects architectural violations (god components, circular deps, etc.)
 
-**3. Agent System** (`codewiki/src/be/claude_agent_sdk_adapter.py`)
-- Uses Claude Agent SDK for agent orchestration
-- Supports standard and deep multi-agent analysis (3 parallel analyzers + composer + verifier)
-- Handles module processing, debug notebooks, and monitoring notebooks
-
-**4. CLI** (`codewiki/cli/`)
-- `commands/config.py`: API configuration management (stores keys in system keychain)
-- `commands/generate.py`: Documentation generation command
-- `config_manager.py`: Handles `~/.codewiki/config.json` persistence
-
-**5. Frontend** (`codewiki/src/fe/`)
-- FastAPI-based web application
-- `web_app.py`, `routes.py`: HTTP API
-- `github_processor.py`: GitHub repo processing
-- `visualise_docs.py`: Documentation visualization
+**CLI** (`codewiki/cli/`) — user interface:
+- `config` command: manage `~/.codewiki/config.json` (file patterns)
+- `generate` command: validate repo → run analysis → produce reports
 
 ### Configuration Flow
 
-1. CLI stores config in `~/.codewiki/config.json` + system keychain (API keys)
-2. `Config` dataclass (`codewiki/src/config.py`) instantiated from CLI or env vars
-3. `AgentInstructions` (`codewiki/cli/models/config.py`) for customization (include/exclude patterns, doc type, custom instructions)
+1. CLI stores config in `~/.codewiki/config.json`
+2. `Config` dataclass (`codewiki/config.py`) holds repo_path, output_dir, patterns
+3. `AgentInstructions` (`codewiki/cli/models/config.py`) for include/exclude patterns
 
 ### Adding Language Support
 
-To add a new language analyzer:
-
-1. Create analyzer in `codewiki/src/be/dependency_analyzer/analyzers/newlang.py`:
-```python
-from .base import BaseAnalyzer
-
-class NewLangAnalyzer(BaseAnalyzer):
-    def __init__(self):
-        super().__init__("newlang")
-
-    def extract_dependencies(self, ast_node):
-        # Implement dependency extraction
-        pass
-```
-
-2. Register in `codewiki/src/be/dependency_analyzer/ast_parser.py`:
-```python
-LANGUAGE_ANALYZERS = {
-    # ... existing languages ...
-    "newlang": NewLangAnalyzer,
-}
-```
-
+1. Create analyzer in `codewiki/analyzer/languages/newlang.py`
+2. Register in `codewiki/analyzer/analysis/call_graph_analyzer.py`
 3. Add tree-sitter dependency to `pyproject.toml`
 
 ## Important File Locations
@@ -164,32 +120,16 @@ LANGUAGE_ANALYZERS = {
 | Purpose | Path |
 |---------|------|
 | CLI entry | `codewiki/cli/main.py` |
-| Config model | `codewiki/src/config.py` |
-| Agent orchestration | `codewiki/src/be/claude_agent_sdk_adapter.py` |
-| Documentation generator | `codewiki/src/be/documentation_generator.py` |
-| Module clustering | `codewiki/src/be/cluster_modules.py` |
-| Prompt templates | `codewiki/src/be/prompt_template.py` |
-| Language analyzers | `codewiki/src/be/dependency_analyzer/analyzers/` |
-| Agent tools | `codewiki/src/be/agent_tools/` |
-
-## Key Constants
-
-- `DEFAULT_MAX_TOKENS = 32768` - Max output tokens for LLM
-- `DEFAULT_MAX_TOKEN_PER_MODULE = 36369` - Threshold for clustering
-- `DEFAULT_MAX_TOKEN_PER_LEAF_MODULE = 16000` - Threshold for leaf module detection
-- `MAX_DEPTH = 2` - Default hierarchical decomposition depth
-
-## Agent Tools
-
-Located in `codewiki/src/be/agent_tools/`:
-- `read_code_components.py`: Read code from the repository
-- `str_replace_editor.py`: Documentation editing
-- `generate_sub_module_documentations.py`: Delegate complex modules
-- `deps.py`: Dependency traversal utilities
+| Config model | `codewiki/config.py` |
+| Analysis pipeline | `codewiki/analyzer/dependency_graphs_builder.py` |
+| AST parser | `codewiki/analyzer/ast_parser.py` |
+| Language analyzers | `codewiki/analyzer/languages/` |
+| Graph metrics | `codewiki/reporting/graph_metrics.py` |
+| Codebase map output | `codewiki/reporting/codebase_map_generator.py` |
+| Arch rules | `codewiki/reporting/arch_rules.py` |
 
 ## Debugging
 
-Enable verbose logging:
 ```bash
 codewiki generate --verbose
 # or

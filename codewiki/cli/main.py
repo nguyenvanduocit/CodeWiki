@@ -1,10 +1,7 @@
-"""
-Main CLI application for CodeWiki using Click framework.
-"""
+"""Main CLI application for CodeWiki."""
 
 import sys
 import click
-from pathlib import Path
 
 from codewiki import __version__
 
@@ -14,12 +11,11 @@ from codewiki import __version__
 @click.pass_context
 def cli(ctx):
     """
-    CodeWiki: Transform codebases into comprehensive documentation.
-    
-    Generate AI-powered documentation for your code repositories with support
-    for Python, Java, JavaScript, TypeScript, C, C++, and C#.
+    CodeWiki: Static analysis for codebases.
+
+    Generates dependency graphs, metrics, and architectural reports
+    for Python, Java, JavaScript, TypeScript, C, C++, C#, Go, and PHP.
     """
-    # Ensure context object exists
     ctx.ensure_object(dict)
 
 
@@ -27,14 +23,12 @@ def cli(ctx):
 def version():
     """Display version information."""
     click.echo(f"CodeWiki CLI v{__version__}")
-    click.echo("Python-based documentation generator using AI analysis")
-    
+    click.echo("Static codebase analysis tool")
 
-# Import commands
+
 from codewiki.cli.commands.config import config_group
 from codewiki.cli.commands.generate import generate_command
 
-# Register command groups
 cli.add_command(config_group)
 cli.add_command(generate_command, name="generate")
 
@@ -47,10 +41,9 @@ def main():
         click.echo("\n\nInterrupted by user", err=True)
         sys.exit(130)
     except Exception as e:
-        click.secho(f"\n✗ Unexpected error: {e}", fg="red", err=True)
+        click.secho(f"\nError: {e}", fg="red", err=True)
         sys.exit(1)
 
 
 if __name__ == "__main__":
     main()
-
